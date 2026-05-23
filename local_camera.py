@@ -40,7 +40,10 @@ class OpenCVCameraTrack(VideoStreamTrack):
 
     async def recv(self):
         pts, time_base = await self.next_timestamp()
-        ok, frame = self.cap.read()
+        try:
+            ok, frame = self.cap.read()
+        except cv2.error:
+            ok, frame = False, None
         if not ok:
             frame = _blank_frame(self.width, self.height, f"Camera {self.index} disconnected")
         else:
@@ -53,8 +56,7 @@ class OpenCVCameraTrack(VideoStreamTrack):
 
     def stop(self):
         super().stop()
-        if self.cap and self.cap.isOpened():
-            self.cap.release()
+        _safe_release(self.cap)
 
 
 def create_usb_first_camera_track(width: int = 640, height: int = 480, fps: int = 24, usb_wait_seconds: float = 3.0):
@@ -67,16 +69,16 @@ def create_usb_first_camera_track(width: int = 640, height: int = 480, fps: int 
 
 def select_usb_first_camera(width: int = 640, height: int = 480, fps: int = 24, usb_wait_seconds: float = 3.0) -> Tuple[int, str]:
     deadline = time.time() + usb_wait_seconds
-    external_indexes = list(range(1, 6))
+    external_indexes = list(range(1, 4))
 
     while time.time() < deadline:
         for index in external_indexes:
             if _camera_works(index, width, height, fps):
                 return index, f"已优先使用 USB/外接摄像头：Camera {index}"
-        time.sleep(0.2)
+        break
 
     if _camera_works(0, width, height, fps):
-        return 0, "3 秒内未发现外接摄像头，已回退到本机默认摄像头：Camera 0"
+        return 0, "未快速发现外接摄像头，已回退到本机默认摄像头：Camera 0"
 
     raise RuntimeError("未找到可用摄像头。请检查 USB 摄像头连接或浏览器摄像头权限。")
 
@@ -89,6 +91,8 @@ def _open_capture(index: int, width: int, height: int, fps: int):
         return None
 
     for prop, value in [
+        (cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 500),
+        (cv2.CAP_PROP_READ_TIMEOUT_MSEC, 500),
         (cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG")),
         (cv2.CAP_PROP_FRAME_WIDTH, width),
         (cv2.CAP_PROP_FRAME_HEIGHT, height),
@@ -106,7 +110,13 @@ def _open_capture(index: int, width: int, height: int, fps: int):
 def _camera_works(index: int, width: int, height: int, fps: int) -> bool:
     cap = _open_capture(index, width, height, fps)
     try:
-        if cap is None or not cap.isOpened():
+        if cap is None:
+            return False
+        try:
+            opened = cap.isOpened()
+        except cv2.error:
+            return False
+        if not opened:
             return False
         for _ in range(3):
             try:
@@ -117,8 +127,22 @@ def _camera_works(index: int, width: int, height: int, fps: int) -> bool:
                 return True
         return False
     finally:
-        if cap is not None:
-            cap.release()
+        _safe_release(cap)
+
+
+def _safe_release(cap) -> None:
+    if cap is None:
+        return
+    try:
+        opened = cap.isOpened()
+    except cv2.error:
+        opened = True
+    if not opened:
+        return
+    try:
+        cap.release()
+    except cv2.error:
+        pass
 
 
 def _blank_frame(width: int, height: int, text: Optional[str] = None):

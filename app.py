@@ -14,7 +14,7 @@ from exercises.bicep_curl import BicepCurlAnalyzer
 from exercises.pushup import PushupAnalyzer
 from exercises.squat import SquatAnalyzer
 from local_camera import create_usb_first_camera_track
-from pose_utils import PoseDetector, draw_correction_card, draw_session_banner, draw_text_panel
+from pose_utils import PoseDetector, draw_correction_card, draw_exercise_joint_highlights, draw_session_banner, draw_text_panel
 from workout_store import body_part_totals, build_session_summary, load_history, render_calendar_html, save_session
 
 feedback_module = importlib.reload(feedback_module)
@@ -32,12 +32,18 @@ RTC_CONFIGURATION = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.goog
 
 BROWSER_CAMERA_CONSTRAINTS = {
     "video": {
-        "width": {"ideal": 480, "max": 640},
-        "height": {"ideal": 360, "max": 480},
-        "frameRate": {"ideal": 15, "max": 15},
+        "width": {"ideal": 640, "max": 640},
+        "height": {"ideal": 426, "max": 480},
+        "frameRate": {"ideal": 10, "max": 12},
     },
     "audio": False,
 }
+
+CAMERA_WIDTH = 640
+CAMERA_HEIGHT = 426
+CAMERA_FPS = 10
+POSE_PROCESS_WIDTH = 320
+USB_WAIT_SECONDS = 1.2
 
 CAMERA_SOURCES = {
     "浏览器摄像头": "browser",
@@ -154,7 +160,7 @@ def apply_theme():
 
 class FitnessVideoProcessor(VideoProcessorBase):
     def __init__(self):
-        self.detector = PoseDetector(model_complexity=0, process_width=384)
+        self.detector = PoseDetector(model_complexity=0, process_width=POSE_PROCESS_WIDTH)
         self.analyzer = SquatAnalyzer()
         self.exercise_name = "深蹲 Squat"
         self.frame_index = 0
@@ -383,16 +389,18 @@ class FitnessVideoProcessor(VideoProcessorBase):
             banner_remaining = remaining
             banner_summary = summary
 
+        output_frame = draw_exercise_joint_highlights(pose_result.annotated_frame, exercise_name, pose_result.landmarks)
         output_frame = draw_correction_card(
-            pose_result.annotated_frame,
+            output_frame,
             exercise_name,
             correction_errors,
             correction_title,
             correction_lines,
             tick,
+            status_lines=status_lines,
         )
         output_frame = draw_session_banner(output_frame, banner_status, banner_remaining, banner_summary)
-        status_y = max(12, output_frame.shape[0] - 112)
+        status_y = max(12, output_frame.shape[0] - 72)
         output = draw_text_panel(output_frame, status_lines, x=14, y=status_y, font_size=16)
         return av.VideoFrame.from_ndarray(output, format="bgr24")
 
@@ -412,7 +420,12 @@ def get_local_camera_track():
         return track
 
     try:
-        track, message = create_usb_first_camera_track(width=480, height=360, fps=15, usb_wait_seconds=3.0)
+        track, message = create_usb_first_camera_track(
+            width=CAMERA_WIDTH,
+            height=CAMERA_HEIGHT,
+            fps=CAMERA_FPS,
+            usb_wait_seconds=USB_WAIT_SECONDS,
+        )
         st.session_state.local_camera_track = track
         st.session_state.local_camera_message = message
         st.session_state.pop("local_camera_error", None)
@@ -472,7 +485,7 @@ def render_sidebar():
     st.sidebar.write("1. 浏览器模式需要允许摄像头权限，本机模式会直接读取 Windows 摄像头")
     st.sidebar.write("2. 保持全身或训练部位在画面中")
     st.sidebar.write("3. 深蹲建议正面，俯卧撑建议侧面，弯举建议侧面或 45°")
-    st.sidebar.write("4. 已启用低延迟模式：480×360 / 15fps，优先保证实时性")
+    st.sidebar.write("4. 已启用课程界面模式：640×426 / 10fps，旧帧会自动丢弃，兼顾观感和实时性")
     st.sidebar.caption("动作成功标准来自外挂知识库：knowledge/exercise_standards.json")
 
     rediscover_camera = False
@@ -622,7 +635,8 @@ def main():
                     rtc_configuration=RTC_CONFIGURATION,
                     video_processor_factory=FitnessVideoProcessor,
                     source_video_track=source_track,
-                    async_processing=False,
+                    async_processing=True,
+                    video_receiver_size=1,
                     sendback_audio=False,
                 )
             else:
@@ -634,7 +648,7 @@ def main():
                 rtc_configuration=RTC_CONFIGURATION,
                 video_processor_factory=FitnessVideoProcessor,
                 media_stream_constraints=BROWSER_CAMERA_CONSTRAINTS,
-                async_processing=False,
+                async_processing=True,
                 video_receiver_size=1,
             )
 
