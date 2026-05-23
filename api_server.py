@@ -46,7 +46,7 @@ EXERCISE_REGISTRY = {
 }
 
 
-app = FastAPI(title="AI Fitness Coach Pose API", version="0.1.0")
+app = FastAPI(title="AI Fitness Coach Pose API", version="1.0.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -55,6 +55,7 @@ app.add_middleware(
         "http://localhost:5173",
         "http://127.0.0.1:5173",
     ],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|(\d{1,3}\.){3}\d{1,3})(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -85,6 +86,10 @@ class PoseSession:
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
     summary: Dict = field(default_factory=dict)
+    last_detected: bool = False
+    last_process_ms: Optional[float] = None
+    last_annotated_image: str = ""
+    last_updated_at: Optional[float] = None
     recorded: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -113,6 +118,10 @@ class PoseSession:
             self.started_at = time.time()
             self.finished_at = None
             self.summary = {}
+            self.last_detected = False
+            self.last_process_ms = None
+            self.last_annotated_image = ""
+            self.last_updated_at = None
             self.recorded = False
 
     def reset(self):
@@ -122,6 +131,10 @@ class PoseSession:
             self.started_at = None
             self.finished_at = None
             self.summary = {}
+            self.last_detected = False
+            self.last_process_ms = None
+            self.last_annotated_image = ""
+            self.last_updated_at = None
             self.recorded = False
 
     def finish(self):
@@ -150,9 +163,9 @@ class PoseSession:
             save_session(self.summary)
             self.recorded = True
 
-    def snapshot(self):
+    def snapshot(self, include_frame=False):
         state = self.analyzer.state
-        return {
+        payload = {
             "sessionId": self.session_id,
             "exercise": self.exercise_key,
             "exerciseLabel": self.label,
@@ -170,6 +183,12 @@ class PoseSession:
             "history": list(state.history),
             "summary": self.summary,
         }
+        if include_frame:
+            payload["detected"] = self.last_detected
+            payload["processMs"] = self.last_process_ms
+            payload["annotatedImage"] = self.last_annotated_image
+            payload["updatedAt"] = self.last_updated_at
+        return payload
 
     def process_frame(self, frame_bgr):
         started = time.perf_counter()
@@ -183,14 +202,23 @@ class PoseSession:
 
             payload = self.snapshot()
             payload["detected"] = pose_result.detected
-            payload["processMs"] = round((time.perf_counter() - started) * 1000, 1)
+            process_ms = round((time.perf_counter() - started) * 1000, 1)
+            payload["processMs"] = process_ms
 
         annotated = draw_exercise_joint_highlights(
             pose_result.annotated_frame,
             self.backend_name,
             pose_result.landmarks,
         )
-        payload["annotatedImage"] = encode_jpeg_data_url(annotated)
+        annotated_image = encode_jpeg_data_url(annotated)
+        updated_at = time.time()
+        with self.lock:
+            self.last_detected = pose_result.detected
+            self.last_process_ms = process_ms
+            self.last_annotated_image = annotated_image
+            self.last_updated_at = updated_at
+        payload["annotatedImage"] = annotated_image
+        payload["updatedAt"] = updated_at
         return payload
 
 
@@ -225,6 +253,16 @@ def get_session_or_404(session_id: str):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     return session
+
+
+def get_latest_session():
+    with sessions_lock:
+        if not sessions:
+            return None
+        return max(
+            sessions.values(),
+            key=lambda item: item.last_updated_at or item.started_at or item.finished_at or 0,
+        )
 
 
 def prune_sessions():
@@ -283,6 +321,22 @@ def process_frame(session_id: str, request: FrameRequest):
     return session.process_frame(frame)
 
 
+@app.get("/api/session/live")
+def latest_session_live():
+    session = get_latest_session()
+    if not session:
+        return {
+            "ok": False,
+            "message": "No training session is available yet.",
+            "status": "idle",
+        }
+
+    with session.lock:
+        payload = session.snapshot(include_frame=True)
+    payload["ok"] = True
+    return payload
+
+
 @app.get("/api/history")
 def history():
     sessions_data = load_history()
@@ -293,4 +347,3 @@ def history():
         "totalSessions": len(sessions_data),
         "bodyPartTotals": [{"name": name, "count": count} for name, count in totals.most_common()],
     }
-

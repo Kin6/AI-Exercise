@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Pico 4 局域网训练展示</title>
+    <link rel="stylesheet" href="/pico-vr.css" />
+  </head>
+  <body>
+    <main class="pico-stage">
+      <header class="pico-topbar">
+        <div>
+          <p class="eyebrow">Pico 4 局域网展示</p>
+          <h1 id="exerciseTitle">等待电脑端开始训练</h1>
+        </div>
+        <div class="top-actions">
+          <span id="apiStatus" class="status-pill is-waiting">连接中</span>
+          <button id="fullscreenButton" type="button">沉浸全屏</button>
+        </div>
+      </header>
+
+      <section class="vr-layout">
+        <aside class="teaching-panel">
+          <div class="panel-title">
+            <span>教学视频</span>
+            <strong id="teachingLabel">循环示范</strong>
+          </div>
+          <video id="teachingVideo" muted autoplay loop playsinline></video>
+          <div class="teaching-meta">
+            <span>电脑端负责识别</span>
+            <span>Pico 端只展示</span>
+          </div>
+        </aside>
+
+        <section class="mirror-panel">
+          <div class="feed-shell">
+            <img id="liveImage" alt="AI 姿态识别画面" />
+            <div id="emptyState" class="empty-state">
+              <strong>等待训练画面</strong>
+              <span>请先在电脑端打开主训练页面并进入实时训练。</span>
+            </div>
+          </div>
+          <div class="metric-strip">
+            <div>
+              <span>标准次数</span>
+              <strong id="validReps">0</strong>
+            </div>
+            <div>
+              <span>尝试次数</span>
+              <strong id="attempts">0</strong>
+            </div>
+            <div>
+              <span>最近得分</span>
+              <strong id="score">100</strong>
+            </div>
+            <div>
+              <span>识别耗时</span>
+              <strong id="processMs">--</strong>
+            </div>
+          </div>
+        </section>
+
+        <aside class="coach-panel">
+          <p id="coachEyebrow" class="eyebrow">AI 状态</p>
+          <blockquote id="coachMessage">等待电脑端训练数据。</blockquote>
+          <div class="sense-list">
+            <div><span>服务状态</span><strong id="serviceState">连接中</strong></div>
+            <div><span>当前阶段</span><strong id="stage">准备</strong></div>
+            <div><span>本轮评级</span><strong id="grade">训练中</strong></div>
+          </div>
+          <div id="errorTags" class="error-tags"></div>
+        </aside>
+      </section>
+    </main>
+
+    <script src="/pico-vr.js" defer></script>
+  </body>
+</html>

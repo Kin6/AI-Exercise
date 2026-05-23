@@ -4,6 +4,7 @@ import {
   Bell,
   Brain,
   CalendarDays,
+  Check,
   ChevronLeft,
   ChevronRight,
   Dumbbell,
@@ -12,11 +13,21 @@ import {
   LineChart,
   MessageCircle,
   Pause,
+  Play,
   Search,
   Sparkles,
-  User,
   Video,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
+import archiveImage from "./assets/dangan.png";
+import bodyImage from "./assets/body-cutout.png";
+import neckStretchImage from "./assets/jingce-qls.png";
+import muscleExplainImage from "./assets/jiroujiangjie.png";
+import musclePartOneImage from "./assets/jirou3-fenbie(1)(1).png";
+import musclePartTwoImage from "./assets/jirou3-fenbie(2)(2).png";
+import musclePartThreeImage from "./assets/jirou3-fenbie(3)(3).png";
+import tuantuanImage from "./assets/tuantuan-xin.png";
 
 type PageId =
   | "home"
@@ -53,7 +64,9 @@ type PoseSessionState = {
     points?: number;
     valid_reps?: number;
     attempts?: number;
+    invalid_attempts?: number;
     avg_score?: number;
+    common_errors?: { name: string; count: number }[];
   };
 };
 
@@ -62,6 +75,8 @@ type CoachExercise = {
   title: string;
   text: string;
   note: string;
+  teachingVideoFile: string;
+  teachingLabel: string;
 };
 
 const poseApiBase =
@@ -76,20 +91,132 @@ const coachExercises: CoachExercise[] = [
     title: "下肢力量 | 深蹲",
     text: "膝盖轨迹 / 髋部后坐 / 左右对称",
     note: "建议正面入镜，脚踝、膝盖、髋部都要可见。",
+    teachingVideoFile: "深蹲.mp4",
+    teachingLabel: "深蹲标准示范",
   },
   {
     key: "pushup",
     title: "上肢稳定 | 俯卧撑",
     text: "肘角幅度 / 身体直线 / 核心塌陷",
     note: "建议侧面入镜，肩、肘、腕、髋、踝保持在画面内。",
+    teachingVideoFile: "俯卧撑.mp4",
+    teachingLabel: "俯卧撑标准示范",
   },
   {
     key: "curl",
     title: "手臂控制 | 弯举",
     text: "肘部漂移 / 借力摆动 / 动作幅度",
     note: "建议侧面或 45 度入镜，训练手臂完整可见。",
+    teachingVideoFile: "弯举.mp4",
+    teachingLabel: "弯举标准示范",
   },
 ];
+
+const getTeachingVideoSrc = (fileName: string) => `/videoTeaching/${encodeURIComponent(fileName)}`;
+const trainingDurationSeconds = 30;
+
+const correctionSpeechKeywords = [
+  "请",
+  "不要",
+  "避免",
+  "保持",
+  "放慢",
+  "固定",
+  "稳定",
+  "下沉",
+  "收紧",
+  "伸直",
+  "进入画面",
+  "完整",
+  "可见",
+  "控制",
+  "节奏",
+  "过高",
+  "过低",
+  "偏",
+  "漂移",
+  "摆动",
+];
+
+const positiveSpeechKeywords = ["不错", "很好", "标准", "完成一次", "继续保持"];
+
+function cleanSpeechText(text = "") {
+  return text
+    .replace(/[“”"']/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isCorrectionSpeech(text: string) {
+  if (!text || positiveSpeechKeywords.some((keyword) => text.includes(keyword))) return false;
+  return correctionSpeechKeywords.some((keyword) => text.includes(keyword));
+}
+
+function getExerciseShortName(title: string) {
+  const parts = title.split("|");
+  return (parts[parts.length - 1] || title).trim();
+}
+
+function buildRoundSummaryMessage(session: PoseSessionState, exercise: CoachExercise) {
+  const actionName = getExerciseShortName(exercise.title);
+  const completedReps = session.summary?.valid_reps ?? session.count ?? 0;
+  const attempts = session.summary?.attempts ?? session.attempts ?? completedReps;
+  const averageScore = session.summary?.avg_score ?? session.score ?? 0;
+  const invalidAttempts = session.summary?.invalid_attempts ?? Math.max(0, attempts - completedReps);
+  const roundedScore = Math.round(averageScore);
+  const scoreText = roundedScore > 0 ? `${roundedScore} 分` : "暂无评分";
+  const repeatedErrors = (session.summary?.common_errors || []).map((error) => error.name).filter(Boolean);
+  const visibleErrors = repeatedErrors.length ? repeatedErrors : session.liveErrors || [];
+  const errorText = visibleErrors.slice(0, 2).join("、");
+
+  if (attempts === 0) {
+    return `本组完成 0 个标准动作，尝试 0 次，暂时没有有效评分。还没有识别到完整的${actionName}动作，先把身体完整放进画面，下一组从一次标准动作开始。`;
+  }
+
+  if (errorText) {
+    return `本组完成 ${completedReps} 个标准动作，尝试 ${attempts} 次，平均得分 ${scoreText}。过程中主要需要注意${errorText}，下一组先放慢节奏，把动作做完整。`;
+  }
+
+  if (invalidAttempts > 0) {
+    return `本组完成 ${completedReps} 个标准动作，尝试 ${attempts} 次，平均得分 ${scoreText}。有 ${invalidAttempts} 次动作还没达到标准，整体已经进入节奏，下一组优先稳定轨迹。`;
+  }
+
+  if (roundedScore >= 85) {
+    return `本组完成 ${completedReps} 个标准动作，尝试 ${attempts} 次，平均得分 ${scoreText}。过程整体稳定，节奏和控制感不错，下一组保持这个速度。`;
+  }
+
+  return `本组完成 ${completedReps} 个标准动作，尝试 ${attempts} 次，平均得分 ${scoreText}。动作已经被识别到，下一组把幅度和身体控制再做得更稳。`;
+}
+
+function pickChineseVoice(voices: SpeechSynthesisVoice[]) {
+  const chineseVoices = voices.filter((voice) => /zh|cmn|普通话|中文|Chinese/i.test(`${voice.lang} ${voice.name}`));
+  const preferredNames = [
+    "Xiaoxiao",
+    "晓晓",
+    "Microsoft Xiaoxiao",
+    "Microsoft 晓晓",
+    "Natural",
+    "Xiaoyi",
+    "Yunxi",
+    "Yunyang",
+    "Yunjian",
+    "云希",
+    "Microsoft",
+    "Google",
+    "普通话",
+    "中文",
+  ];
+
+  return (
+    preferredNames
+      .map((name) => chineseVoices.find((voice) => voice.name.toLowerCase().includes(name.toLowerCase())))
+      .find(Boolean) ||
+    chineseVoices.find((voice) => voice.lang.toLowerCase().startsWith("zh-cn")) ||
+    chineseVoices[0] ||
+    voices[0] ||
+    null
+  );
+}
 
 const flow: PageId[] = [
   "home",
@@ -106,7 +233,7 @@ const flow: PageId[] = [
 ];
 
 const pageMeta: Record<PageId, { index: string; title: string; hint: string }> = {
-  home: { index: "01", title: "首页｜今日状态入口", hint: "从一点点身体觉察开始" },
+  home: { index: "01", title: "首页 | 今日状态入口", hint: "从一点点身体觉察开始" },
   awareness: { index: "02", title: "身体觉察页", hint: "先听见身体正在说什么" },
   understanding: { index: "03", title: "身体理解页", hint: "把不舒服背后的链路说清楚" },
   muscles: { index: "04", title: "核心肌肉溯源页", hint: "找到肩颈代偿的源头" },
@@ -121,10 +248,9 @@ const pageMeta: Record<PageId, { index: string; title: string; hint: string }> =
 
 const navItems = [
   { label: "今日状态", page: "home" as PageId, icon: Home },
-  { label: "身体档案", page: "archive" as PageId, icon: CalendarDays },
   { label: "成长变化", page: "feedback" as PageId, icon: LineChart },
+  { label: "身体档案", page: "archive" as PageId, icon: CalendarDays },
   { label: "训练中心", page: "coach" as PageId, icon: Dumbbell },
-  { label: "我的", page: "archive" as PageId, icon: User },
 ];
 
 const feelings = ["酸胀", "发紧", "疲惫", "沉重", "无力", "僵硬"];
@@ -149,22 +275,27 @@ function Card({
   );
 }
 
-function Pill({ children, active = false }: { children: React.ReactNode; active?: boolean; key?: React.Key }) {
-  return <button className={`pill ${active ? "is-active" : ""}`}>{children}</button>;
+function Pill({
+  children,
+  active = false,
+  onClick,
+}: {
+  children: React.ReactNode;
+  active?: boolean;
+  key?: React.Key;
+  onClick?: () => void;
+}) {
+  return (
+    <button className={`pill ${active ? "is-active" : ""}`} type="button" aria-pressed={active} onClick={onClick}>
+      {children}
+    </button>
+  );
 }
 
 function Tuantuan() {
   return (
     <div className="tuantuan" aria-label="团团">
-      <span className="tuantuan-glow" />
-      <span className="fur f1" />
-      <span className="fur f2" />
-      <span className="fur f3" />
-      <span className="tuantuan-eye left" />
-      <span className="tuantuan-eye right" />
-      <span className="tuantuan-blush left" />
-      <span className="tuantuan-blush right" />
-      <span className="tuantuan-smile" />
+      <img src={tuantuanImage} alt="" aria-hidden="true" />
     </div>
   );
 }
@@ -189,7 +320,7 @@ function getPetBounds() {
   const height = window.innerHeight;
   return {
     minX: Math.max(24, width * 0.12),
-    maxX: Math.max(260, width * 0.43),
+    maxX: Math.max(300, width * 0.5),
     minY: Math.max(230, height * 0.56),
     maxY: Math.max(360, height - 198),
   };
@@ -308,10 +439,6 @@ function DesktopPet() {
         <span className="pet-cheek right" />
         <span className="pet-mouth" />
         <span className="pet-bandage" />
-        <span className="pet-fuzz f1" />
-        <span className="pet-fuzz f2" />
-        <span className="pet-fuzz f3" />
-        <span className="pet-fuzz f4" />
         <span className="pet-emote e1" />
         <span className="pet-emote e2" />
         <span className="pet-z">Z</span>
@@ -323,20 +450,45 @@ function DesktopPet() {
   );
 }
 
-function HumanFigure({ compact = false }: { compact?: boolean }) {
+const bodyRegionMarkers = [
+  { left: "50%", top: "11%" },
+  { left: "60%", top: "23%" },
+  { left: "50%", top: "31%" },
+  { left: "50%", top: "42%" },
+  { left: "50%", top: "53%" },
+  { left: "42%", top: "66%" },
+  { left: "42%", top: "75%" },
+  { left: "57%", top: "85%" },
+  { left: "57%", top: "95%" },
+];
+
+function HumanFigure({
+  compact = false,
+  selectedRegionIndexes = [],
+  onRegionSelect,
+}: {
+  compact?: boolean;
+  selectedRegionIndexes?: number[];
+  onRegionSelect?: (index: number) => void;
+}) {
+  const markerIndexes = selectedRegionIndexes.includes(9)
+    ? bodyRegionMarkers.map((_, index) => index)
+    : selectedRegionIndexes.filter((index) => index >= 0 && index < bodyRegionMarkers.length);
+
   return (
     <div className={`human-figure ${compact ? "compact" : ""}`}>
-      <div className="figure-head" />
-      <div className="figure-neck hot" />
-      <div className="figure-torso">
-        <span className="spine" />
-        <span className="shoulder-line hot" />
-        <span className="core-glow" />
-      </div>
-      <div className="arm left hot" />
-      <div className="arm right hot" />
-      <div className="leg left" />
-      <div className="leg right" />
+      <img className="body-image" src={bodyImage} alt="" aria-hidden="true" />
+      {markerIndexes.map((index) => (
+        <button
+          className="body-dot is-active"
+          style={bodyRegionMarkers[index]}
+          type="button"
+          aria-label={regions[index]}
+          aria-pressed="true"
+          onClick={() => onRegionSelect?.(index)}
+          key={regions[index]}
+        />
+      ))}
     </div>
   );
 }
@@ -405,23 +557,50 @@ function HomePage({ go }: { go: (page: PageId) => void }) {
 }
 
 function AwarenessPage({ go }: { go: (page: PageId) => void }) {
+  const [selectedFeelings, setSelectedFeelings] = useState([1]);
+  const [selectedRegions, setSelectedRegions] = useState([1]);
+  const [selectedScenes, setSelectedScenes] = useState([0]);
+  const toggleIndex = (items: number[], index: number) =>
+    items.includes(index) ? items.filter((item) => item !== index) : [...items, index];
+
   return (
     <div className="page awareness-layout">
       <Card className="control-panel">
         <h2>1. 今天最明显的感觉是什么？</h2>
-        <div className="pill-grid">{feelings.map((item, i) => <Pill key={item} active={i === 1}>{item}</Pill>)}</div>
+        <div className="pill-grid">
+          {feelings.map((item, i) => (
+            <Pill key={item} active={selectedFeelings.includes(i)} onClick={() => setSelectedFeelings((current) => toggleIndex(current, i))}>
+              {item}
+            </Pill>
+          ))}
+        </div>
       </Card>
       <Card className="body-picker">
         <div>
           <h2>2. 哪个区域最明显？</h2>
           <p>团团会把区域、感觉和场景连起来理解。</p>
         </div>
-        <HumanFigure />
-        <div className="region-list">{regions.map((item) => <Pill key={item} active={item === "肩颈"}>{item}</Pill>)}</div>
+        <HumanFigure
+          selectedRegionIndexes={selectedRegions}
+          onRegionSelect={(index) => setSelectedRegions((current) => toggleIndex(current, index))}
+        />
+        <div className="region-list">
+          {regions.map((item, i) => (
+            <Pill key={item} active={selectedRegions.includes(i)} onClick={() => setSelectedRegions((current) => toggleIndex(current, i))}>
+              {item}
+            </Pill>
+          ))}
+        </div>
       </Card>
       <Card className="control-panel scene-panel">
         <h2>3. 最近通常发生在？</h2>
-        <div className="pill-grid">{scenes.map((item, i) => <Pill key={item} active={i === 0}>{item}</Pill>)}</div>
+        <div className="pill-grid">
+          {scenes.map((item, i) => (
+            <Pill key={item} active={selectedScenes.includes(i)} onClick={() => setSelectedScenes((current) => toggleIndex(current, i))}>
+              {item}
+            </Pill>
+          ))}
+        </div>
         <div className="companion-note">
           <Tuantuan />
           <p>我会先理解你的身体状态，再给你轻一点的恢复方案。</p>
@@ -440,14 +619,14 @@ function UnderstandingPage({ go }: { go: (page: PageId) => void }) {
         <h1>你的肩膀，可能正在替脖子工作</h1>
         <p>这是身体在久坐低头后做出的临时补偿，不是你不够放松。先看懂它，再温柔地把工作还给该参与的肌肉。</p>
         <div className="chain">
-          {["久坐低头", "头部前移", "深层颈屈肌参与不足", "斜方肌上束/肩胛提肌代偿", "肩颈酸胀"].map((step) => (
+          {["久坐低头", "头部前移", "深层颈屈肌参与不足", "斜方肌上束和肩胛提肌代偿", "肩颈酸胀"].map((step) => (
             <span key={step}>{step}</span>
           ))}
         </div>
         <button className="primary" onClick={() => go("muscles")}>查看相关肌肉 <ChevronRight size={18} /></button>
       </Card>
       <Card className="body-map-card">
-        <HumanFigure />
+        <img className="muscle-explain-image" src={muscleExplainImage} alt="" aria-hidden="true" loading="eager" decoding="sync" />
         <div className="bubble-note">颈肩区域正在承担更多稳定任务，先让它慢慢卸力。</div>
       </Card>
     </div>
@@ -455,6 +634,7 @@ function UnderstandingPage({ go }: { go: (page: PageId) => void }) {
 }
 
 function MusclesPage({ go }: { go: (page: PageId) => void }) {
+  const musclePartImages = [musclePartOneImage, musclePartTwoImage, musclePartThreeImage];
   const muscles = [
     ["01", "斜方肌上束", "低头和耸肩时容易过度工作，带来肩颈上缘的酸胀。"],
     ["02", "肩胛提肌", "连接颈椎与肩胛，紧张时会让脖子侧后方变沉。"],
@@ -463,8 +643,14 @@ function MusclesPage({ go }: { go: (page: PageId) => void }) {
   return (
     <div className="page muscles-page">
       <div className="muscle-cards">
-        {muscles.map(([n, title, text]) => (
+        {muscles.map(([n, title, text], index) => (
           <Card className="muscle-card" key={title}>
+            <img
+              className="muscle-card-visual"
+              src={musclePartImages[index]}
+              alt=""
+              aria-hidden="true"
+            />
             <span>{n}</span>
             <h3>{title}</h3>
             <p>{text}</p>
@@ -478,7 +664,7 @@ function MusclesPage({ go }: { go: (page: PageId) => void }) {
           <ChevronRight />
           <strong>再激活稳定肌群</strong>
           <ChevronRight />
-          <strong>最后AI观察动作</strong>
+          <strong>最后 AI 观察动作</strong>
         </div>
         <button className="primary wide" onClick={() => go("plan")}>查看今日恢复方案 <ChevronRight size={18} /></button>
       </Card>
@@ -492,7 +678,7 @@ function PlanPage({ go }: { go: (page: PageId) => void }) {
       <Card className="plan-summary">
         <p className="eyebrow">今日目标</p>
         <h1>减少肩颈代偿</h1>
-        <p>预计时间：6分钟</p>
+        <p>预计时间：6 分钟</p>
         <div className="time-ring"><span>6</span><small>分钟</small></div>
       </Card>
       <Card className="move-list">
@@ -522,7 +708,7 @@ function TrainingPage({ go }: { go: (page: PageId) => void }) {
           <strong className="countdown">0:30</strong>
         </div>
         <div className="demo-zone">
-          <HumanFigure />
+          <img className="training-pose-image" src={neckStretchImage} alt="" aria-hidden="true" />
           <div className="breath-ring" />
         </div>
       </Card>
@@ -611,7 +797,7 @@ function ObservationPage({ go }: { go: (page: PageId) => void }) {
         <div className="ai-panel-head">
           <Brain />
           <div>
-            <p className="eyebrow">AI正在观察</p>
+            <p className="eyebrow">AI 正在观察</p>
             <h2>团团看见了你的肩颈</h2>
           </div>
         </div>
@@ -621,23 +807,42 @@ function ObservationPage({ go }: { go: (page: PageId) => void }) {
           <div><span>左右对称</span><strong>良好</strong></div>
           <div><span>肩颈区域</span><strong>偏高</strong></div>
         </div>
-        <p className="soft-note">这不是考试打分，团团只是在帮你发现身体正在怎么努力。</p>
+        <p className="soft-note">这不是考试打分，团团只是帮你发现身体正在怎么努力。</p>
       </Card>
     </div>
   );
 }
 
-function IntegratedObservationPage({ go, exercise }: { go: (page: PageId) => void; exercise: CoachExercise }) {
+function IntegratedObservationPage({
+  go,
+  exercise,
+  onPreviousExercise,
+  onRoundComplete,
+}: {
+  go: (page: PageId) => void;
+  exercise: CoachExercise;
+  onPreviousExercise: () => void;
+  onRoundComplete: () => void;
+}) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const captureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const autoAdvanceRef = useRef(false);
+  const speechVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
+  const lastSpokenCorrectionRef = useRef({ text: "", at: 0 });
   const [sessionId, setSessionId] = useState<string>("");
   const [session, setSession] = useState<PoseSessionState>({});
   const [apiState, setApiState] = useState<"connecting" | "ready" | "offline">("connecting");
   const [streamReady, setStreamReady] = useState(false);
   const [cameraError, setCameraError] = useState("");
+  const [isPaused, setIsPaused] = useState(false);
+  const [countdownSeconds, setCountdownSeconds] = useState(trainingDurationSeconds);
+  const [showRoundFinish, setShowRoundFinish] = useState(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [speechSupported, setSpeechSupported] = useState(false);
 
-  const metrics = [
+  const countdownRemainingPercent = clamp((countdownSeconds / trainingDurationSeconds) * 100, 0, 100);
+  const bottomMetrics = [
     ["标准次数", String(session.count ?? 0)],
     ["尝试次数", String(session.attempts ?? 0)],
     ["最近得分", `${session.score ?? 100}`],
@@ -657,6 +862,19 @@ function IntegratedObservationPage({ go, exercise }: { go: (page: PageId) => voi
     (apiState === "offline"
       ? "姿态识别服务未连接。请先启动 Python Pose API，再回到这里刷新。"
       : "正在连接摄像头和姿态识别服务。");
+  const isRoundFinished = session.status === "finished";
+  const panelMessage = isRoundFinished ? buildRoundSummaryMessage(session, exercise) : liveMessage;
+  const panelEyebrow = isRoundFinished ? "本组已完成" : "AI 正在观察";
+  const correctionSpeechText = useMemo(() => {
+    if (apiState !== "ready" || isPaused || showRoundFinish) return "";
+
+    const errors = (session.liveErrors || []).map((error) => cleanSpeechText(error)).filter(Boolean);
+    if (errors.length) return `请注意，${errors.slice(0, 2).join("，")}。`;
+
+    const message = cleanSpeechText(session.liveMessage || "");
+    if (!session.detected || !isCorrectionSpeech(message)) return "";
+    return message.endsWith("。") || message.endsWith("！") ? message : `${message}。`;
+  }, [apiState, isPaused, session.detected, session.liveErrors, session.liveMessage, showRoundFinish]);
 
   useEffect(() => {
     let alive = true;
@@ -665,6 +883,12 @@ function IntegratedObservationPage({ go, exercise }: { go: (page: PageId) => voi
       setApiState("connecting");
       setSession({});
       setSessionId("");
+      setIsPaused(false);
+      setCountdownSeconds(trainingDurationSeconds);
+      setShowRoundFinish(false);
+      autoAdvanceRef.current = false;
+      lastSpokenCorrectionRef.current = { text: "", at: 0 };
+      window.speechSynthesis?.cancel();
 
       try {
         const health = await fetch(`${poseApiBase}/api/health`);
@@ -673,7 +897,7 @@ function IntegratedObservationPage({ go, exercise }: { go: (page: PageId) => voi
         const createResponse = await fetch(`${poseApiBase}/api/session`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ exercise: exercise.key, durationSeconds: 45 }),
+          body: JSON.stringify({ exercise: exercise.key, durationSeconds: trainingDurationSeconds }),
         });
         if (!createResponse.ok) throw new Error("Pose API session create failed");
 
@@ -702,6 +926,7 @@ function IntegratedObservationPage({ go, exercise }: { go: (page: PageId) => voi
             score: 100,
             count: 0,
             attempts: 0,
+            remaining: trainingDurationSeconds,
           });
         }
       }
@@ -712,6 +937,59 @@ function IntegratedObservationPage({ go, exercise }: { go: (page: PageId) => voi
       alive = false;
     };
   }, [exercise]);
+
+  useEffect(() => {
+    if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") return;
+
+    setSpeechSupported(true);
+
+    const loadVoices = () => {
+      speechVoiceRef.current = pickChineseVoice(window.speechSynthesis.getVoices());
+    };
+
+    loadVoices();
+    window.speechSynthesis.addEventListener("voiceschanged", loadVoices);
+    return () => {
+      window.speechSynthesis.removeEventListener("voiceschanged", loadVoices);
+      window.speechSynthesis.cancel();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!voiceEnabled || !speechSupported || !correctionSpeechText) return;
+
+    const now = Date.now();
+    const normalizedText = correctionSpeechText.replace(/\s+/g, "");
+    const lastSpoken = lastSpokenCorrectionRef.current;
+    if (lastSpoken.text === normalizedText && now - lastSpoken.at < 11000) return;
+    if (now - lastSpoken.at < 4800) return;
+
+    const utterance = new SpeechSynthesisUtterance(correctionSpeechText);
+    utterance.lang = "zh-CN";
+    utterance.rate = 0.9;
+    utterance.pitch = 1;
+    utterance.volume = 0.9;
+    if (speechVoiceRef.current) utterance.voice = speechVoiceRef.current;
+
+    lastSpokenCorrectionRef.current = { text: normalizedText, at: now };
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  }, [correctionSpeechText, speechSupported, voiceEnabled]);
+
+  useEffect(() => {
+    if (session.status !== "active") return;
+    if (typeof session.remaining !== "number") return;
+    const nextRemaining = clamp(Math.ceil(session.remaining), 0, trainingDurationSeconds);
+    setCountdownSeconds(nextRemaining);
+  }, [session.remaining, session.status]);
+
+  useEffect(() => {
+    if (isPaused || countdownSeconds <= 0) return;
+    const timer = window.setInterval(() => {
+      setCountdownSeconds((current) => Math.max(0, current - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [countdownSeconds, isPaused]);
 
   useEffect(() => {
     let cancelled = false;
@@ -752,7 +1030,7 @@ function IntegratedObservationPage({ go, exercise }: { go: (page: PageId) => voi
   }, [exercise]);
 
   useEffect(() => {
-    if (!sessionId || !streamReady || apiState !== "ready") return;
+    if (!sessionId || !streamReady || apiState !== "ready" || isPaused) return;
 
     let stopped = false;
     let timer: number | undefined;
@@ -793,7 +1071,7 @@ function IntegratedObservationPage({ go, exercise }: { go: (page: PageId) => voi
       stopped = true;
       if (timer) window.clearTimeout(timer);
     };
-  }, [apiState, sessionId, streamReady]);
+  }, [apiState, isPaused, sessionId, streamReady]);
 
   const runSessionAction = async (action: "start" | "reset" | "finish") => {
     if (!sessionId) return;
@@ -809,6 +1087,10 @@ function IntegratedObservationPage({ go, exercise }: { go: (page: PageId) => voi
   };
 
   const restartSession = async () => {
+    setIsPaused(false);
+    setCountdownSeconds(trainingDurationSeconds);
+    setShowRoundFinish(false);
+    autoAdvanceRef.current = false;
     await runSessionAction("reset");
     await runSessionAction("start");
   };
@@ -818,13 +1100,42 @@ function IntegratedObservationPage({ go, exercise }: { go: (page: PageId) => voi
     go("feedback");
   };
 
+  const togglePaused = () => {
+    if (showRoundFinish) return;
+    setIsPaused((current) => !current);
+  };
+
+  const toggleVoice = () => {
+    if (!speechSupported) return;
+    setVoiceEnabled((current) => {
+      if (current) {
+        window.speechSynthesis.cancel();
+      } else {
+        window.speechSynthesis.resume();
+      }
+      return !current;
+    });
+  };
+
+  useEffect(() => {
+    if (countdownSeconds > 0 || autoAdvanceRef.current) return;
+
+    autoAdvanceRef.current = true;
+    setIsPaused(true);
+    setShowRoundFinish(true);
+
+    const timer = window.setTimeout(async () => {
+      await runSessionAction("finish");
+      setShowRoundFinish(false);
+      onRoundComplete();
+    }, 2400);
+
+    return () => window.clearTimeout(timer);
+  }, [countdownSeconds, onRoundComplete, sessionId]);
+
   return (
     <div className="page observation-grid">
       <section className="camera-stage">
-        <div className="camera-top">
-          <button><Video size={18} /> {apiStatusText}</button>
-          <span>{session.exerciseLabel || exercise.title} · AI 实时观察</span>
-        </div>
         <div className="backend-camera-feed">
           <video
             ref={videoRef}
@@ -841,36 +1152,133 @@ function IntegratedObservationPage({ go, exercise }: { go: (page: PageId) => voi
             </div>
           )}
           <canvas ref={captureCanvasRef} className="capture-canvas" />
-        </div>
-        <div className={`pose-live-badge ${session.detected ? "detected" : ""}`}>
-          <span />
-          {session.detected ? "已识别人体彩点" : "等待完整入镜"}
-        </div>
-        <div className="metric-overlay">
-          {metrics.map(([label, value]) => (
-            <div key={label}>
-              <span>{label}</span>
-              <strong>{value}</strong>
+
+          <div className="camera-top">
+            <button><Video size={18} /> {apiStatusText}</button>
+            <button
+              type="button"
+              className={`voice-toggle ${voiceEnabled ? "is-on" : ""}`}
+              onClick={toggleVoice}
+              disabled={!speechSupported}
+              title={speechSupported ? "切换姿势纠正语音播报" : "当前浏览器不支持语音播报"}
+            >
+              {voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}
+              <span>{speechSupported ? (voiceEnabled ? "语音" : "静音") : "无语音"}</span>
+            </button>
+            <span>{session.exerciseLabel || exercise.title} · AI 实时观察</span>
+          </div>
+
+          <section className="teaching-video-card" aria-label="教学视频">
+            <div className="teaching-video-head">
+              <strong>教学视频</strong>
+              <span>{exercise.teachingLabel}</span>
             </div>
-          ))}
-        </div>
-        <div className="camera-bottom">
-          <span>
-            阶段 {stageLabel[session.stage || ""] || session.stage || "准备"} · 剩余 {Math.ceil(session.remaining || 0)} 秒
-          </span>
-          <button onClick={restartSession}><Pause size={18} /> 重新开始</button>
-          <button className="primary" onClick={finishSession}>完成本组</button>
+            <div className="teaching-video-frame">
+              <video
+                key={exercise.teachingVideoFile}
+                src={getTeachingVideoSrc(exercise.teachingVideoFile)}
+                autoPlay
+                loop
+                muted
+                playsInline
+                preload="auto"
+              />
+              <span className="teaching-play-mark" aria-hidden="true">
+                <Play size={34} />
+              </span>
+            </div>
+            <div className="teaching-video-meta">
+              <span>循环示范</span>
+              <span>{session.processMs ? `${session.processMs}ms` : "实时对照"}</span>
+            </div>
+          </section>
+
+          <section className="coach-progress-panel" aria-label="训练倒计时">
+            <div className="coach-progress-head">
+              <strong>训练倒计时</strong>
+              <span>{isPaused ? "已暂停" : "30秒计时"}</span>
+            </div>
+            <div
+              className="coach-ring"
+              style={{ "--countdown-remaining": `${countdownRemainingPercent}%` } as React.CSSProperties}
+            >
+              <strong>{countdownSeconds}</strong>
+              <span>秒</span>
+            </div>
+            <div className="countdown-status">
+              <span>当前阶段</span>
+              <strong>{stageLabel[session.stage || ""] || session.stage || "准备"}</strong>
+            </div>
+          </section>
+
+          <div className={`pose-live-badge ${session.detected ? "detected" : ""}`}>
+            <span />
+            {session.detected ? "已识别人体彩点" : "等待完整入镜"}
+          </div>
+
+          {showRoundFinish && (
+            <div className="round-finish-effect" role="status" aria-live="polite">
+              <div className="flower-bloom" aria-hidden="true">
+                {Array.from({ length: 14 }, (_, index) => (
+                  <span
+                    className="flower-petal"
+                    style={{
+                      "--petal-angle": `${index * (360 / 14)}deg`,
+                      "--petal-delay": `${index * 22}ms`,
+                    } as React.CSSProperties}
+                    key={index}
+                  />
+                ))}
+                {Array.from({ length: 10 }, (_, index) => (
+                  <span
+                    className="flower-spark"
+                    style={{
+                      "--spark-angle": `${index * 36}deg`,
+                      "--spark-delay": `${index * 38}ms`,
+                    } as React.CSSProperties}
+                    key={index}
+                  />
+                ))}
+                <span className="flower-center" />
+              </div>
+              <div className="round-finish-copy">
+                <strong>本轮完成</strong>
+                <span>点击下一页继续</span>
+              </div>
+            </div>
+          )}
+
+          <div className="training-control-bar">
+            <button type="button" className="training-control ghost" onClick={onPreviousExercise} disabled={showRoundFinish}>
+              <ChevronLeft size={20} /> 上一个
+            </button>
+            <div className="training-metrics-strip" aria-label="实时识别指标">
+              {bottomMetrics.map(([label, value]) => (
+                <div className="training-metric-item" key={label}>
+                  <span>{label}</span>
+                  <strong>{value}</strong>
+                </div>
+              ))}
+            </div>
+            <button type="button" className="training-control pause" onClick={togglePaused} disabled={showRoundFinish}>
+              {isPaused ? <Play size={20} /> : <Pause size={20} />}
+              {isPaused ? "继续" : "暂停"}
+            </button>
+            <button type="button" className="training-control complete" onClick={finishSession} disabled={showRoundFinish}>
+              <Check size={20} /> 完成本动作
+            </button>
+          </div>
         </div>
       </section>
       <Card className="ai-panel">
         <div className="ai-panel-head">
           <Brain />
           <div>
-            <p className="eyebrow">AI 正在观察</p>
+            <p className="eyebrow">{panelEyebrow}</p>
             <h2>{exercise.title}</h2>
           </div>
         </div>
-        <blockquote>“{liveMessage}”</blockquote>
+        <blockquote className={isRoundFinished ? "is-summary" : undefined}>“{panelMessage}”</blockquote>
         <div className="sense-list">
           <div><span>服务状态</span><strong>{apiStatusText}</strong></div>
           <div><span>当前阶段</span><strong>{stageLabel[session.stage || ""] || session.stage || "准备"}</strong></div>
@@ -895,11 +1303,11 @@ function FeedbackPage({ go }: { go: (page: PageId) => void }) {
   return (
     <div className="page feedback-grid">
       <Card className="celebrate-card">
-        <Tuantuan />
         <h1>今天恢复完成了！</h1>
-        <p>你照顾了肩颈6分钟</p>
+        <p>你照顾了肩颈 6 分钟</p>
       </Card>
       <Card className="feedback-card">
+        <Tuantuan />
         <h2>现在感觉怎么样？</h2>
         {["轻松了一些", "有一点缓解", "变化不明显"].map((item, i) => <button className={i === 0 ? "selected" : ""} key={item}>{item}</button>)}
         <button className="primary wide" onClick={() => go("archive")}>保存到身体档案 <ChevronRight size={18} /></button>
@@ -912,6 +1320,7 @@ function ArchivePage() {
   const days = Array.from({ length: 30 }, (_, i) => i + 1);
   return (
     <div className="page archive-grid">
+      <img className="archive-dashboard-image" src={archiveImage} alt="" aria-hidden="true" />
       <Card className="profile-card">
         <Tuantuan />
         <p className="eyebrow">用户</p>
@@ -1005,6 +1414,7 @@ function IntegratedCoachPage({ onStartExercise }: { onStartExercise: (exercise: 
 export default function App() {
   const [page, setPage] = useState<PageId>("home");
   const [selectedExercise, setSelectedExercise] = useState<CoachExercise>(coachExercises[0]);
+  const [observationRoundComplete, setObservationRoundComplete] = useState(false);
   const meta = pageMeta[page];
   const nextPage = useMemo(() => flow[(flow.indexOf(page) + 1) % flow.length], [page]);
 
@@ -1019,11 +1429,27 @@ export default function App() {
     if (page === "muscles") return <MusclesPage go={setPage} />;
     if (page === "plan") return <PlanPage go={setPage} />;
     if (page === "training") return <TrainingPage go={setPage} />;
-    if (page === "observation") return <IntegratedObservationPage go={setPage} exercise={selectedExercise} />;
+    if (page === "observation") {
+      return (
+        <IntegratedObservationPage
+          go={setPage}
+          exercise={selectedExercise}
+          onRoundComplete={() => setObservationRoundComplete(true)}
+          onPreviousExercise={() => {
+            setObservationRoundComplete(false);
+            setSelectedExercise((current) => {
+              const currentIndex = coachExercises.findIndex((exercise) => exercise.key === current.key);
+              return coachExercises[(currentIndex - 1 + coachExercises.length) % coachExercises.length];
+            });
+          }}
+        />
+      );
+    }
     if (page === "feedback") return <FeedbackPage go={setPage} />;
     if (page === "archive") return <ArchivePage />;
     if (page === "explore") return <ExplorePage />;
     return <IntegratedCoachPage onStartExercise={(exercise) => {
+      setObservationRoundComplete(false);
       setSelectedExercise(exercise);
       setPage("observation");
     }} />;
@@ -1031,6 +1457,7 @@ export default function App() {
 
   return (
     <main className="wellness-app">
+      <img className="asset-preload" src={muscleExplainImage} alt="" aria-hidden="true" />
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><Sparkles size={20} /></div>
@@ -1049,7 +1476,7 @@ export default function App() {
         </nav>
         <Card className="sidebar-companion">
           <Tuantuan />
-          <strong>团团在线</strong>
+          <strong>团团</strong>
           <p>今天会用更轻的节奏陪你恢复肩颈。</p>
         </Card>
       </aside>
@@ -1072,11 +1499,13 @@ export default function App() {
           {renderPage()}
         </section>
 
-        <button className="floating-next" onClick={() => setPage(nextPage)}>
-          下一页 <ChevronRight size={18} />
-        </button>
+        {page !== "archive" && (page !== "observation" || observationRoundComplete) && (
+          <button className="floating-next" onClick={() => setPage(nextPage)}>
+            下一页 <ChevronRight size={18} />
+          </button>
+        )}
       </section>
-      <DesktopPet />
+      {page !== "observation" && <DesktopPet />}
     </main>
   );
 }

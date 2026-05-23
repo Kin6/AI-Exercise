@@ -1,4 +1,5 @@
 import express from "express";
+import fs from "fs";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
@@ -8,9 +9,21 @@ dotenv.config();
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT || 3000);
 
   app.use(express.json());
+
+  const teachingVideoDir = [
+    path.resolve(process.cwd(), "assets", "videoTeaching"),
+    path.resolve(process.cwd(), "..", "assets", "videoTeaching"),
+    path.resolve(process.cwd(), "..", "ai-fitness-coach", "assets", "videoTeaching"),
+  ].find((candidate) => fs.existsSync(candidate));
+
+  if (teachingVideoDir) {
+    app.use("/videoTeaching", express.static(teachingVideoDir));
+  } else {
+    console.warn("WARNING: videoTeaching assets folder was not found.");
+  }
 
   // Initialize Gemini API client with required User-Agent
   const apiKey = process.env.GEMINI_API_KEY;
