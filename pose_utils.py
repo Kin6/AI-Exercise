@@ -834,11 +834,20 @@ def _draw_status_row(draw, text: str, x: int, y: int, accent=(36, 211, 238), max
 
 
 def _scale_for(width: int) -> float:
-    return max(0.58, min(1.05, width / 640.0))
+    return max(0.72, min(1.28, width / 720.0))
 
 
 def _font_scaled(base: int, scale: float):
     return _load_font(max(10, int(base * scale)))
+
+
+def _draw_centered_text(draw, box, text: str, font, fill, x_offset: int = 0, y_offset: int = 0):
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+    x = box[0] + (box[2] - box[0] - text_w) / 2 - bbox[0] + x_offset
+    y = box[1] + (box[3] - box[1] - text_h) / 2 - bbox[1] + y_offset
+    draw.text((x, y), text, font=font, fill=fill)
 
 
 def _fit_text(draw, text: str, font, max_width: int) -> str:
@@ -1041,13 +1050,12 @@ def _draw_course_overlay(
     margin = max(10, int(18 * scale))
     top = max(8, int(16 * scale))
     bottom_h = max(40, int(50 * scale))
-    panel_alpha = 104
     radius = max(12, int(20 * scale))
 
     # Soft vignette like the reference app, with clear center for the body.
-    draw.rectangle((0, 0, width, height), fill=(8, 8, 8, 32))
-    draw.rectangle((0, 0, width, int(height * 0.16)), fill=(15, 15, 16, 44))
-    draw.rectangle((0, int(height * 0.78), width, height), fill=(12, 12, 13, 54))
+    draw.rectangle((0, 0, width, height), fill=(8, 8, 8, 12))
+    draw.rectangle((0, 0, width, int(height * 0.16)), fill=(15, 15, 16, 24))
+    draw.rectangle((0, int(height * 0.78), width, height), fill=(12, 12, 13, 30))
 
     # Header.
     back_r = max(13, int(20 * scale))
@@ -1057,16 +1065,16 @@ def _draw_course_overlay(
     arrow_font = _font_scaled(26, scale)
     draw.text((back_cx - int(8 * scale), back_cy - int(18 * scale)), "‹", font=arrow_font, fill=(34, 36, 58, 245))
     draw.line((back_cx + back_r + int(13 * scale), top + 7, back_cx + back_r + int(13 * scale), top + int(34 * scale)), fill=(242, 242, 238, 64), width=1)
-    title_font = _font_scaled(20, scale)
-    subtitle_font = _font_scaled(12, scale)
+    title_font = _font_scaled(22, scale)
+    subtitle_font = _font_scaled(13, scale)
     title_x = back_cx + back_r + int(26 * scale)
-    draw.text((title_x, top + int(2 * scale)), title_text, font=title_font, fill=(250, 250, 246, 245))
+    draw.text((title_x, top + int(2 * scale)), title_text, font=title_font, fill=(255, 255, 250, 255))
     info_r = max(6, int(8 * scale))
     title_bbox = draw.textbbox((title_x, top), title_text, font=title_font)
     info_x = min(width - int(145 * scale), title_bbox[2] + int(14 * scale))
     draw.ellipse((info_x, top + int(9 * scale), info_x + info_r * 2, top + int(9 * scale) + info_r * 2), outline=(246, 246, 240, 135), width=1)
     draw.text((info_x + info_r - 2, top + int(8 * scale)), "i", font=_font_scaled(12, scale), fill=(246, 246, 240, 180))
-    draw.text((title_x, top + int(27 * scale)), subtitle, font=subtitle_font, fill=(250, 250, 246, 205))
+    draw.text((title_x, top + int(29 * scale)), subtitle, font=subtitle_font, fill=(255, 255, 250, 230))
     pill_w = max(78, int(108 * scale))
     pill_h = max(24, int(34 * scale))
     pill = (width - margin - pill_w, top + int(2 * scale), width - margin, top + int(2 * scale) + pill_h)
@@ -1078,8 +1086,8 @@ def _draw_course_overlay(
     left_w = max(105, int(width * 0.23))
     video_h = max(58, int(height * 0.18))
     video_box = (margin, int(height * 0.17), margin + left_w, int(height * 0.17) + video_h)
-    _draw_glass(draw, video_box, radius, fill_alpha=82, outline_alpha=80)
-    draw.text((video_box[0] + int(12 * scale), video_box[1] + int(10 * scale)), "教学视频", font=_font_scaled(13, scale), fill=(250, 250, 246, 230))
+    _draw_glass(draw, video_box, radius, fill_alpha=64, outline_alpha=96)
+    draw.text((video_box[0] + int(12 * scale), video_box[1] + int(10 * scale)), "教学视频", font=_font_scaled(14, scale), fill=(255, 255, 250, 245))
     draw.rectangle((video_box[0] + int(3 * scale), video_box[1] + int(32 * scale), video_box[2] - int(3 * scale), video_box[3] - int(3 * scale)), fill=(235, 236, 230, 28))
 
     # Left completion panel.
@@ -1087,8 +1095,8 @@ def _draw_course_overlay(
     comp_h = max(92, int(height * 0.27))
     comp_y = min(height - bottom_h - margin - comp_h, int(height * 0.47))
     comp_box = (margin + int(14 * scale), comp_y, margin + int(14 * scale) + comp_w, comp_y + comp_h)
-    _draw_glass(draw, comp_box, radius, fill_alpha=94, outline_alpha=28)
-    draw.text((comp_box[0] + int(14 * scale), comp_box[1] + int(14 * scale)), "动作完成度", font=_font_scaled(14, scale), fill=(250, 250, 246, 218))
+    _draw_glass(draw, comp_box, radius, fill_alpha=82, outline_alpha=42)
+    draw.text((comp_box[0] + int(14 * scale), comp_box[1] + int(14 * scale)), "动作完成度", font=_font_scaled(15, scale), fill=(255, 255, 250, 238))
     ring_r = max(20, int(29 * scale))
     _draw_ring(draw, comp_box[2] - ring_r - int(14 * scale), comp_box[1] + ring_r + int(20 * scale), ring_r, percent, scale)
     bar_x = comp_box[0] + int(14 * scale)
@@ -1101,10 +1109,10 @@ def _draw_course_overlay(
     right_w = max(152, int(width * 0.22))
     right_h = max(210, height - bottom_h - int(height * 0.16) - margin)
     right_box = (width - margin - right_w, int(height * 0.16), width - margin, int(height * 0.16) + right_h)
-    _draw_glass(draw, right_box, max(10, int(14 * scale)), fill_alpha=118, outline_alpha=30)
+    _draw_glass(draw, right_box, max(10, int(14 * scale)), fill_alpha=92, outline_alpha=42)
     rx = right_box[0] + int(14 * scale)
     ry = right_box[1] + int(14 * scale)
-    draw.text((rx, ry), "AI正在观察", font=_font_scaled(13, scale), fill=(250, 250, 246, 230))
+    draw.text((rx, ry), "AI正在观察", font=_font_scaled(14, scale), fill=(255, 255, 250, 245))
     mascot_r = max(14, int(20 * scale))
     draw.ellipse((rx, ry + int(38 * scale), rx + mascot_r * 2, ry + int(38 * scale) + mascot_r * 2), fill=(136, 112, 238, 210))
     draw.text((rx + int(8 * scale), ry + int(43 * scale)), "AI", font=_font_scaled(13, scale), fill=(250, 250, 246, 245))
@@ -1112,10 +1120,10 @@ def _draw_course_overlay(
     bubble_y = ry + int(30 * scale)
     bubble_w = right_box[2] - bubble_x - int(12 * scale)
     bubble_h = max(42, int(50 * scale))
-    draw.rounded_rectangle((bubble_x, bubble_y, bubble_x + bubble_w, bubble_y + bubble_h), radius=max(8, int(12 * scale)), fill=(74, 74, 74, 102))
+    draw.rounded_rectangle((bubble_x, bubble_y, bubble_x + bubble_w, bubble_y + bubble_h), radius=max(8, int(12 * scale)), fill=(34, 34, 34, 146))
     feedback = detail_lines[-1] if detail_lines else "动作稳定"
-    draw.text((bubble_x + int(10 * scale), bubble_y + int(10 * scale)), _fit_text(draw, title, _font_scaled(12, scale), bubble_w - int(20 * scale)), font=_font_scaled(12, scale), fill=(255, 204, 64, 245))
-    draw.text((bubble_x + int(10 * scale), bubble_y + int(30 * scale)), _fit_text(draw, feedback.replace("纠正：", ""), _font_scaled(11, scale), bubble_w - int(20 * scale)), font=_font_scaled(11, scale), fill=(250, 250, 246, 225))
+    draw.text((bubble_x + int(10 * scale), bubble_y + int(10 * scale)), _fit_text(draw, title, _font_scaled(13, scale), bubble_w - int(20 * scale)), font=_font_scaled(13, scale), fill=(255, 213, 78, 255))
+    draw.text((bubble_x + int(10 * scale), bubble_y + int(31 * scale)), _fit_text(draw, feedback.replace("纠正：", ""), _font_scaled(12, scale), bubble_w - int(20 * scale)), font=_font_scaled(12, scale), fill=(255, 255, 250, 240))
     sep_y = bubble_y + bubble_h + int(12 * scale)
     draw.line((rx, sep_y, right_box[2] - int(14 * scale), sep_y), fill=(246, 246, 240, 48), width=1)
     draw.text((rx, sep_y + int(10 * scale)), "身体感受", font=_font_scaled(10, scale), fill=(250, 250, 246, 225))
@@ -1436,34 +1444,40 @@ def _draw_course_bottom_bar(frame: np.ndarray, lines, x: int, y: int, font_size:
     bar_h = max(42, int(58 * scale))
     bar_y = min(max(y, height - bar_h - margin), height - bar_h - 4)
     bar = (margin, bar_y, width - margin, bar_y + bar_h)
-    draw.rounded_rectangle(bar, radius=max(14, int(20 * scale)), fill=(54, 54, 52, 112), outline=(246, 246, 240, 24), width=1)
+    draw.rounded_rectangle(bar, radius=max(14, int(20 * scale)), fill=(24, 24, 23, 178), outline=(255, 255, 248, 64), width=1)
 
     # Previous control.
     prev_w = max(78, int(120 * scale))
     prev = (bar[0] + int(18 * scale), bar_y + int(8 * scale), bar[0] + int(18 * scale) + prev_w, bar_y + bar_h - int(8 * scale))
-    draw.rounded_rectangle(prev, radius=(prev[3] - prev[1]) // 2, fill=(82, 82, 80, 78))
-    draw.text((prev[0] + int(22 * scale), prev[1] + int(8 * scale)), "‹  上一个", font=_font_scaled(13, scale), fill=(250, 250, 246, 226))
+    draw.rounded_rectangle(prev, radius=(prev[3] - prev[1]) // 2, fill=(72, 72, 70, 142))
+    prev_font = _font_scaled(15, scale)
+    _draw_centered_text(draw, prev, "‹  上一个", prev_font, (255, 255, 250, 245))
 
     progress_text = f"进度  {min(5, int(metrics.get('valid', '0') or 0))} / 5"
-    draw.text((bar[0] + int(170 * scale), bar_y + int(19 * scale)), progress_text, font=_font_scaled(14, scale), fill=(250, 250, 246, 218))
+    progress_font = _font_scaled(16, scale)
+    progress_box = (bar[0] + int(150 * scale), bar_y + int(8 * scale), bar[0] + int(300 * scale), bar_y + bar_h - int(8 * scale))
+    _draw_centered_text(draw, progress_box, progress_text, progress_font, (255, 255, 250, 245))
 
     # Pause control.
     pause_w = max(86, int(116 * scale))
     pause = (width // 2 - pause_w // 2, bar_y + int(8 * scale), width // 2 + pause_w // 2, bar_y + bar_h - int(8 * scale))
-    draw.rounded_rectangle(pause, radius=(pause[3] - pause[1]) // 2, fill=(72, 72, 70, 92))
+    draw.rounded_rectangle(pause, radius=(pause[3] - pause[1]) // 2, fill=(48, 48, 46, 156))
     icon_r = max(12, int(18 * scale))
     icon_cx = pause[0] + int(28 * scale)
     icon_cy = (pause[1] + pause[3]) // 2
     draw.ellipse((icon_cx - icon_r, icon_cy - icon_r, icon_cx + icon_r, icon_cy + icon_r), outline=(250, 250, 246, 105), width=1)
     draw.rounded_rectangle((icon_cx - 5, icon_cy - 8, icon_cx - 1, icon_cy + 8), radius=2, fill=(250, 250, 246, 230))
     draw.rounded_rectangle((icon_cx + 3, icon_cy - 8, icon_cx + 7, icon_cy + 8), radius=2, fill=(250, 250, 246, 230))
-    draw.text((pause[0] + int(52 * scale), pause[1] + int(8 * scale)), "暂停", font=_font_scaled(13, scale), fill=(250, 250, 246, 230))
+    pause_font = _font_scaled(15, scale)
+    pause_text_box = (pause[0] + int(42 * scale), pause[1], pause[2] - int(12 * scale), pause[3])
+    _draw_centered_text(draw, pause_text_box, "暂停", pause_font, (255, 255, 250, 248))
 
     # Complete button.
     btn_w = max(118, int(172 * scale))
     btn = (bar[2] - btn_w - int(18 * scale), bar_y + int(8 * scale), bar[2] - int(18 * scale), bar_y + bar_h - int(8 * scale))
     _draw_gradient_round_rect(overlay, btn, (btn[3] - btn[1]) // 2, (104, 132, 255, 232), (142, 80, 232, 232))
-    draw.text((btn[0] + int(34 * scale), btn[1] + int(8 * scale)), "完成本动作", font=_font_scaled(13, scale), fill=(250, 250, 246, 245))
+    btn_font = _font_scaled(15, scale)
+    _draw_centered_text(draw, btn, "完成本动作", btn_font, (255, 255, 250, 255))
 
     return _alpha_blend_rgba(frame, np.array(overlay))
 

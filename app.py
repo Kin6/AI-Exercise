@@ -1,11 +1,12 @@
 import importlib
+import json
 import threading
 import time
 from datetime import datetime
-from collections import Counter
 
 import av
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit_webrtc import RTCConfiguration, VideoProcessorBase, WebRtcMode, webrtc_streamer
 
 import feedback as feedback_module
@@ -14,7 +15,7 @@ from exercises.bicep_curl import BicepCurlAnalyzer
 from exercises.pushup import PushupAnalyzer
 from exercises.squat import SquatAnalyzer
 from local_camera import create_usb_first_camera_track
-from pose_utils import PoseDetector, draw_correction_card, draw_exercise_joint_highlights, draw_session_banner, draw_text_panel
+from pose_utils import PoseDetector, draw_exercise_joint_highlights, draw_session_banner
 from workout_store import body_part_totals, build_session_summary, load_history, render_calendar_html, save_session
 
 feedback_module = importlib.reload(feedback_module)
@@ -32,17 +33,17 @@ RTC_CONFIGURATION = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.goog
 
 BROWSER_CAMERA_CONSTRAINTS = {
     "video": {
-        "width": {"ideal": 640, "max": 640},
-        "height": {"ideal": 426, "max": 480},
-        "frameRate": {"ideal": 10, "max": 12},
+        "width": {"ideal": 1280, "max": 1280},
+        "height": {"ideal": 720, "max": 720},
+        "frameRate": {"ideal": 15, "max": 15},
     },
     "audio": False,
 }
 
-CAMERA_WIDTH = 640
-CAMERA_HEIGHT = 426
-CAMERA_FPS = 10
-POSE_PROCESS_WIDTH = 320
+CAMERA_WIDTH = 1280
+CAMERA_HEIGHT = 720
+CAMERA_FPS = 15
+POSE_PROCESS_WIDTH = 640
 USB_WAIT_SECONDS = 1.2
 
 CAMERA_SOURCES = {
@@ -59,7 +60,14 @@ STAGE_LABELS = {
 SESSION_IDLE = "idle"
 SESSION_COUNTDOWN = "countdown"
 SESSION_ACTIVE = "active"
+SESSION_PAUSED = "paused"
 SESSION_FINISHED = "finished"
+
+TUTORIAL_VIDEO_SOURCES = {
+    "深蹲 Squat": "",
+    "俯卧撑 Push-up": "",
+    "弯举 Bicep Curl": "",
+}
 
 
 def empty_score_details():
@@ -99,6 +107,16 @@ def apply_theme():
   --fit-amber: #f59e0b;
 }
 .stApp { background: linear-gradient(180deg, #f8fbff 0%, #eef4f8 100%); color: var(--fit-ink); }
+.main .block-container {
+  max-width: 100%;
+  padding-left: 2rem;
+  padding-right: 2rem;
+}
+video {
+  width: 100% !important;
+  height: auto !important;
+  image-rendering: auto;
+}
 [data-testid="stSidebar"] { background: #ffffff; border-right: 1px solid #e5e7eb; }
 [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { color: #0f172a; }
 [data-testid="stMetric"] {
@@ -170,6 +188,8 @@ class FitnessVideoProcessor(VideoProcessorBase):
         self.countdown_started_at = None
         self.active_started_at = None
         self.finished_at = None
+        self.paused_from_status = None
+        self.paused_remaining = 0
         self.session_summary = empty_session_summary()
         self.session_recorded = False
         self.lock = threading.Lock()
@@ -199,6 +219,8 @@ class FitnessVideoProcessor(VideoProcessorBase):
                 self.countdown_started_at = None
                 self.active_started_at = None
                 self.finished_at = None
+                self.paused_from_status = None
+                self.paused_remaining = 0
                 self.session_summary = empty_session_summary()
                 self.session_recorded = False
                 self.snapshot.update(
@@ -228,6 +250,8 @@ class FitnessVideoProcessor(VideoProcessorBase):
             self.countdown_started_at = time.time()
             self.active_started_at = None
             self.finished_at = None
+            self.paused_from_status = None
+            self.paused_remaining = 0
             self.session_summary = empty_session_summary()
             self.session_recorded = False
             self.snapshot.update(
@@ -251,6 +275,8 @@ class FitnessVideoProcessor(VideoProcessorBase):
             self.countdown_started_at = None
             self.active_started_at = None
             self.finished_at = None
+            self.paused_from_status = None
+            self.paused_remaining = 0
             self.session_summary = empty_session_summary()
             self.session_recorded = False
             self.snapshot = {
@@ -278,7 +304,40 @@ class FitnessVideoProcessor(VideoProcessorBase):
             return max(0, 3 - (now - self.countdown_started_at))
         if self.session_status == SESSION_ACTIVE and self.active_started_at:
             return max(0, self.session_duration - (now - self.active_started_at))
+        if self.session_status == SESSION_PAUSED:
+            return max(0, self.paused_remaining)
         return 0
+
+    def toggle_pause(self):
+        with self.lock:
+            now = time.time()
+            if self.session_status in {SESSION_COUNTDOWN, SESSION_ACTIVE}:
+                self.paused_from_status = self.session_status
+                self.paused_remaining = self._session_remaining(now)
+                self.session_status = SESSION_PAUSED
+                self.snapshot["session_status"] = self.session_status
+                self.snapshot["session_remaining"] = self.paused_remaining
+                self.snapshot["message"] = "训练已暂停。"
+                self.snapshot["live_message"] = "已暂停，点击继续恢复训练。"
+                return
+
+            if self.session_status == SESSION_PAUSED:
+                if self.paused_from_status == SESSION_COUNTDOWN:
+                    self.countdown_started_at = now - max(0, 3 - self.paused_remaining)
+                    self.session_status = SESSION_COUNTDOWN
+                elif self.paused_from_status == SESSION_ACTIVE:
+                    self.active_started_at = now - max(0, self.session_duration - self.paused_remaining)
+                    self.session_status = SESSION_ACTIVE
+                self.paused_from_status = None
+                self.paused_remaining = 0
+                self.snapshot["session_status"] = self.session_status
+                self.snapshot["session_remaining"] = self._session_remaining(now)
+                self.snapshot["message"] = "训练继续。"
+                self.snapshot["live_message"] = "训练继续，保持动作节奏。"
+
+    def complete_session(self):
+        with self.lock:
+            self._finish_session(time.time())
 
     def _advance_session(self, now):
         if self.session_status == SESSION_COUNTDOWN and self.countdown_started_at:
@@ -369,40 +428,26 @@ class FitnessVideoProcessor(VideoProcessorBase):
                 session_text = f"倒计时 {max(1, int(remaining + 0.999))} 秒"
             elif session_status == SESSION_ACTIVE:
                 session_text = f"专家评判中 | 剩余 {max(0, int(remaining + 0.999))} 秒"
+            elif session_status == SESSION_PAUSED:
+                session_text = "训练已暂停"
             elif session_status == SESSION_FINISHED:
                 session_text = f"本轮结束 | {summary.get('grade', 'N/A')}级 | {summary.get('points', 0)}积分"
             else:
                 session_text = "按空格开始：3秒倒计时后进入专家评判"
 
-            status_lines = [
+            self.snapshot["status_lines"] = [
                 f"当前：{self.exercise_name} | 标准 {self.snapshot['count']} / 尝试 {self.snapshot.get('attempts', 0)} | 阶段 {STAGE_LABELS.get(self.snapshot['stage'], self.snapshot['stage'])} | 最近得分 {self.snapshot['score']}",
                 session_text,
                 self.snapshot["live_message"],
             ]
             exercise_name = self.exercise_name
-            history = list(self.snapshot.get("history", []))
-            last_rep = history[-1] if history else None
-            correction_title, correction_lines = build_rep_correction_text(exercise_name, last_rep)
-            correction_errors = list(last_rep.get("errors", [])) if last_rep else []
-            tick = self.frame_index
             banner_status = session_status
             banner_remaining = remaining
             banner_summary = summary
 
         output_frame = draw_exercise_joint_highlights(pose_result.annotated_frame, exercise_name, pose_result.landmarks)
-        output_frame = draw_correction_card(
-            output_frame,
-            exercise_name,
-            correction_errors,
-            correction_title,
-            correction_lines,
-            tick,
-            status_lines=status_lines,
-        )
         output_frame = draw_session_banner(output_frame, banner_status, banner_remaining, banner_summary)
-        status_y = max(12, output_frame.shape[0] - 72)
-        output = draw_text_panel(output_frame, status_lines, x=14, y=status_y, font_size=16)
-        return av.VideoFrame.from_ndarray(output, format="bgr24")
+        return av.VideoFrame.from_ndarray(output_frame, format="bgr24")
 
 
 def stop_local_camera_track():
@@ -436,7 +481,7 @@ def get_local_camera_track():
 
 
 def install_space_start_shortcut():
-    st.html(
+    components.html(
         """
 <script>
 (() => {
@@ -468,13 +513,550 @@ def install_space_start_shortcut():
   setInterval(bindFrames, 1000);
 </script>
         """,
-        width=1,
-        unsafe_allow_javascript=True,
+        height=0,
     )
+
+
+def _query_param(name, default=""):
+    value = st.query_params.get(name, default)
+    if isinstance(value, list):
+        return value[0] if value else default
+    return value if value is not None else default
+
+
+def read_overlay_action():
+    action = _query_param("fit_action", "")
+    token = _query_param("fit_token", "")
+    if not action or not token:
+        return "", ""
+    if st.session_state.get("last_fit_action_token") == token:
+        return "", ""
+    return action, token
+
+
+def apply_pre_render_overlay_action(action):
+    if action != "previous":
+        return
+    choices = list(EXERCISES.keys())
+    current = st.session_state.get("exercise_choice", choices[0])
+    index = choices.index(current) if current in choices else 0
+    st.session_state.exercise_choice = choices[(index - 1) % len(choices)]
+
+
+def mark_overlay_action_handled(token):
+    if token:
+        st.session_state.last_fit_action_token = token
+
+
+def exercise_overlay_copy(exercise_name):
+    if "俯卧撑" in exercise_name:
+        return {
+            "title": "标准俯卧撑",
+            "subtitle": "收紧核心，观察身体是否成直线",
+            "metricA": "下放深度",
+            "metricB": "身体直线",
+            "metricC": "核心稳定",
+            "muscle": "胸肌 / 肱三头肌 / 核心",
+        }
+    if "弯举" in exercise_name:
+        return {
+            "title": "哑铃弯举",
+            "subtitle": "固定肘部，观察是否借力摆动",
+            "metricA": "弯举幅度",
+            "metricB": "肘部稳定",
+            "metricC": "躯干控制",
+            "muscle": "肱二头肌 / 肱肌 / 前臂",
+        }
+    return {
+        "title": "标准深蹲",
+        "subtitle": "膝盖朝向脚尖，观察下蹲深度",
+        "metricA": "下蹲深度",
+        "metricB": "膝盖轨迹",
+        "metricC": "身体控制",
+        "muscle": "股四头肌 / 臀大肌 / 核心",
+    }
+
+
+def build_overlay_data(exercise_name, ctx, duration_seconds):
+    snapshot = ctx.video_processor.snapshot if ctx and ctx.video_processor else {}
+    summary = snapshot.get("session_summary") or empty_session_summary()
+    status = snapshot.get("session_status", SESSION_IDLE)
+    valid = int(snapshot.get("count", 0) or 0)
+    attempts = int(snapshot.get("attempts", 0) or 0)
+    score = int(snapshot.get("score", 100) or 100)
+    errors = list(snapshot.get("live_errors", []) or [])
+    copy = exercise_overlay_copy(exercise_name)
+
+    completion = min(100, round(valid / 5 * 100))
+    form_score = max(0, min(100, score))
+    stability = max(0, min(100, 88 - len(errors) * 16))
+    symmetry = 72 if "左右不平衡" in errors else 92
+
+    if errors:
+        coach_title = errors[0]
+        coach_text = snapshot.get("live_message", "按提示调整动作。").replace("实时纠正：", "")
+    elif status == SESSION_PAUSED:
+        coach_title = "训练已暂停"
+        coach_text = "点击继续恢复训练"
+    elif status == SESSION_ACTIVE:
+        coach_title = "动作稳定"
+        coach_text = "保持节奏，继续完成动作"
+    else:
+        coach_title = "准备开始"
+        coach_text = "按空格或开始训练进入评判"
+
+    primary_action = "start" if status in {SESSION_IDLE, SESSION_FINISHED} else "complete"
+    primary_label = "开始训练" if primary_action == "start" else "完成本动作"
+    pause_label = "继续" if status == SESSION_PAUSED else "暂停"
+
+    return {
+        **copy,
+        "exercise": exercise_name,
+        "tutorialUrl": TUTORIAL_VIDEO_SOURCES.get(exercise_name, ""),
+        "valid": valid,
+        "attempts": attempts,
+        "score": score,
+        "duration": int(duration_seconds),
+        "remaining": int(snapshot.get("session_remaining", 0) or 0),
+        "status": status,
+        "grade": summary.get("grade", "N/A"),
+        "points": int(summary.get("points", 0) or 0),
+        "completion": completion,
+        "formScore": form_score,
+        "stability": stability,
+        "symmetry": symmetry,
+        "coachTitle": coach_title,
+        "coachText": coach_text,
+        "message": snapshot.get("live_message", "准备开始，身体进入画面后完成一次动作。"),
+        "primaryAction": primary_action,
+        "primaryLabel": primary_label,
+        "pauseLabel": pause_label,
+    }
+
+
+def install_course_overlay(data):
+    payload = json.dumps(data, ensure_ascii=False)
+    components.html(
+        f"""
+<script>
+(() => {{
+  const data = {payload};
+  const root = window.parent;
+  const doc = root.document;
+  root.__fitOverlayData = data;
+
+  if (!root.__fitOverlayAction) {{
+    root.__fitOverlayAction = (action) => {{
+      const url = new URL(root.location.href);
+      url.searchParams.set("fit_action", action);
+      url.searchParams.set("fit_token", String(Date.now()));
+      root.location.href = url.toString();
+    }};
+  }}
+
+  const ensureStyle = () => {{
+    if (doc.getElementById("fit-course-overlay-style")) return;
+    const style = doc.createElement("style");
+    style.id = "fit-course-overlay-style";
+    style.textContent = `
+      #fit-course-overlay {{
+        position: fixed;
+        z-index: 999997;
+        pointer-events: none;
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+        color: rgba(255,255,250,.96);
+        text-rendering: geometricPrecision;
+        -webkit-font-smoothing: antialiased;
+      }}
+      #fit-course-overlay * {{ box-sizing: border-box; }}
+      .fit-ov-root {{
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        border-radius: 2px;
+        background: linear-gradient(90deg, rgba(0,0,0,.22), rgba(0,0,0,0) 38%, rgba(0,0,0,.24));
+      }}
+      .fit-ov-card {{
+        position: absolute;
+        pointer-events: auto;
+        border: 1px solid rgba(255,255,255,.22);
+        background: rgba(34,34,34,.34);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 18px 50px rgba(0,0,0,.18);
+        backdrop-filter: blur(18px) saturate(125%);
+        -webkit-backdrop-filter: blur(18px) saturate(125%);
+      }}
+      .fit-ov-top {{
+        position: absolute;
+        left: 2.2%;
+        top: 3.2%;
+        display: flex;
+        gap: 20px;
+        align-items: center;
+      }}
+      .fit-ov-back {{
+        width: clamp(42px, 4.3vw, 58px);
+        height: clamp(42px, 4.3vw, 58px);
+        border: 0;
+        border-radius: 999px;
+        background: rgba(255,255,255,.9);
+        color: #1f2433;
+        font-size: clamp(28px, 3vw, 40px);
+        line-height: 1;
+        display: grid;
+        place-items: center;
+        cursor: pointer;
+        pointer-events: auto;
+      }}
+      .fit-ov-title h2 {{
+        margin: 0 0 8px;
+        font-size: clamp(24px, 3.2vw, 42px);
+        line-height: 1;
+        letter-spacing: 0;
+        font-weight: 800;
+      }}
+      .fit-ov-title p {{
+        margin: 0;
+        font-size: clamp(15px, 1.55vw, 22px);
+        line-height: 1.15;
+        color: rgba(255,255,250,.84);
+      }}
+      .fit-ov-pill {{
+        position: absolute;
+        right: 2.3%;
+        top: 3.2%;
+        padding: 12px 22px;
+        border-radius: 999px;
+        background: rgba(28,28,28,.34);
+        backdrop-filter: blur(16px);
+        -webkit-backdrop-filter: blur(16px);
+        font-size: clamp(14px, 1.35vw, 20px);
+        font-weight: 750;
+      }}
+      .fit-ov-tutorial {{
+        left: 2.2%;
+        top: 14%;
+        width: 27%;
+        height: 23%;
+        border-radius: 18px;
+        overflow: hidden;
+      }}
+      .fit-ov-tutorial video, .fit-ov-video-placeholder {{
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }}
+      .fit-ov-video-placeholder {{
+        display: grid;
+        place-items: center;
+        background: radial-gradient(circle at 55% 45%, rgba(255,255,255,.24), rgba(255,255,255,.04));
+      }}
+      .fit-ov-video-title {{
+        position: absolute;
+        top: 18px;
+        left: 22px;
+        font-size: clamp(14px, 1.4vw, 20px);
+        font-weight: 750;
+      }}
+      .fit-ov-play {{
+        width: 54px;
+        height: 54px;
+        border-radius: 999px;
+        border: 1px solid rgba(255,255,255,.28);
+        background: rgba(30,30,38,.48);
+        display: grid;
+        place-items: center;
+        font-size: 28px;
+      }}
+      .fit-ov-time {{
+        position: absolute;
+        left: 22px;
+        bottom: 18px;
+        font-size: clamp(14px, 1.3vw, 19px);
+        font-weight: 700;
+      }}
+      .fit-ov-progress {{
+        left: 3.5%;
+        bottom: 15%;
+        width: 22%;
+        min-width: 245px;
+        border-radius: 20px;
+        padding: 28px 30px;
+      }}
+      .fit-ov-progress h3, .fit-ov-coach h3 {{
+        margin: 0 0 22px;
+        font-size: clamp(16px, 1.5vw, 22px);
+        font-weight: 800;
+      }}
+      .fit-ov-ring-row {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 22px;
+      }}
+      .fit-ov-ring {{
+        width: 96px;
+        height: 96px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        background: conic-gradient(#b9ef75 calc(var(--p) * 1%), rgba(255,255,255,.18) 0);
+        font-size: 30px;
+        font-weight: 800;
+      }}
+      .fit-ov-ring::before {{
+        content: "";
+        position: absolute;
+        width: 74px;
+        height: 74px;
+        border-radius: inherit;
+        background: rgba(64,64,64,.58);
+      }}
+      .fit-ov-ring span {{ position: relative; }}
+      .fit-ov-meter {{
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px 14px;
+        align-items: center;
+        margin: 16px 0;
+        font-size: clamp(13px, 1.25vw, 18px);
+        font-weight: 680;
+      }}
+      .fit-ov-bar {{
+        grid-column: 1 / -1;
+        height: 7px;
+        border-radius: 999px;
+        background: rgba(255,255,255,.2);
+        overflow: hidden;
+      }}
+      .fit-ov-bar i {{
+        display: block;
+        height: 100%;
+        width: calc(var(--v) * 1%);
+        border-radius: inherit;
+        background: #b9ef75;
+      }}
+      .fit-ov-coach {{
+        right: 4%;
+        top: 13%;
+        width: 22%;
+        min-width: 285px;
+        height: 63%;
+        border-radius: 22px;
+        padding: 28px;
+      }}
+      .fit-ov-bubble {{
+        display: grid;
+        grid-template-columns: 64px 1fr;
+        gap: 16px;
+        align-items: center;
+        padding: 14px;
+        border-radius: 16px;
+        background: rgba(255,255,255,.08);
+        margin-bottom: 24px;
+      }}
+      .fit-ov-mascot {{
+        width: 58px;
+        height: 58px;
+        border-radius: 18px;
+        display: grid;
+        place-items: center;
+        background: linear-gradient(145deg, #8b7af7, #6554d9);
+        font-weight: 900;
+      }}
+      .fit-ov-bubble strong {{
+        display: block;
+        color: #ffd558;
+        font-size: clamp(14px, 1.25vw, 18px);
+        margin-bottom: 6px;
+      }}
+      .fit-ov-bubble span {{
+        display: block;
+        font-size: clamp(13px, 1.15vw, 17px);
+        color: rgba(255,255,250,.86);
+      }}
+      .fit-ov-section {{
+        border-top: 1px solid rgba(255,255,255,.12);
+        padding-top: 20px;
+        margin-top: 20px;
+      }}
+      .fit-ov-segments {{
+        display: flex;
+        gap: 6px;
+        margin: 12px 0 18px;
+      }}
+      .fit-ov-segments i {{
+        flex: 1;
+        height: 9px;
+        border-radius: 999px;
+        background: rgba(255,255,255,.16);
+      }}
+      .fit-ov-segments i.on.amber {{ background: #ffbe55; }}
+      .fit-ov-segments i.on.green {{ background: #a8ea70; }}
+      .fit-ov-muscle {{
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        color: rgba(255,255,250,.82);
+        font-size: clamp(12px, 1vw, 16px);
+      }}
+      .fit-ov-figure {{
+        width: 86px;
+        height: 132px;
+        border: 1px solid rgba(255,255,255,.35);
+        border-radius: 999px 999px 26px 26px;
+        background: linear-gradient(rgba(255,255,255,.08), rgba(255,255,255,.02));
+      }}
+      .fit-ov-bottom {{
+        position: absolute;
+        left: 1.6%;
+        right: 1.6%;
+        bottom: 2.4%;
+        height: 78px;
+        border-radius: 22px;
+        background: rgba(42,42,42,.42);
+        border: 1px solid rgba(255,255,255,.14);
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
+        display: grid;
+        grid-template-columns: 220px 1fr 190px 1fr 320px;
+        align-items: center;
+        gap: 18px;
+        padding: 0 28px;
+        pointer-events: auto;
+      }}
+      .fit-ov-btn {{
+        height: 52px;
+        border: 0;
+        border-radius: 999px;
+        color: rgba(255,255,250,.96);
+        background: rgba(255,255,255,.08);
+        font-size: clamp(15px, 1.5vw, 21px);
+        font-weight: 800;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        cursor: pointer;
+      }}
+      .fit-ov-btn.primary {{
+        background: linear-gradient(100deg, #6d83ff, #9354ea);
+      }}
+      .fit-ov-count {{
+        text-align: center;
+        font-size: clamp(16px, 1.6vw, 24px);
+        font-weight: 780;
+        color: rgba(255,255,250,.86);
+      }}
+      .fit-ov-hidden {{ display: none !important; }}
+    `;
+    doc.head.appendChild(style);
+  }};
+
+  const segmentHtml = (count, total, color) => Array.from({{ length: total }}, (_, i) => `<i class="${{i < count ? `on ${{color}}` : ""}}"></i>`).join("");
+  const setAction = (action) => `root.__fitOverlayAction("${{action}}")`;
+  const render = (d) => `
+    <div class="fit-ov-root">
+      <div class="fit-ov-top">
+        <button class="fit-ov-back" onclick='${{setAction("previous")}}'>‹</button>
+        <div class="fit-ov-title">
+          <h2>${{d.title}}</h2>
+          <p>${{d.subtitle}}</p>
+        </div>
+      </div>
+      <div class="fit-ov-pill">💡 动作要点</div>
+      <div class="fit-ov-card fit-ov-tutorial">
+        ${{d.tutorialUrl ? `<video src="${{d.tutorialUrl}}" controls playsinline></video>` : `<div class="fit-ov-video-placeholder"><div class="fit-ov-play">▶</div></div>`}}
+        <div class="fit-ov-video-title">教学视频</div>
+        <div class="fit-ov-time">${{d.tutorialUrl ? "00:00 / 00:00" : "待接入视频"}}</div>
+      </div>
+      <div class="fit-ov-card fit-ov-progress">
+        <div class="fit-ov-ring-row">
+          <h3>动作完成度</h3>
+          <div class="fit-ov-ring" style="--p:${{d.completion}}"><span>${{d.completion}}%</span></div>
+        </div>
+        ${{[
+          [d.metricA, d.formScore],
+          [d.metricB, d.stability],
+          [d.metricC, d.symmetry]
+        ].map(([label, value]) => `<div class="fit-ov-meter"><span>${{label}}</span><b>${{value}}%</b><div class="fit-ov-bar" style="--v:${{value}}"><i></i></div></div>`).join("")}}
+      </div>
+      <div class="fit-ov-card fit-ov-coach">
+        <h3>AI正在观察 ✦</h3>
+        <div class="fit-ov-bubble">
+          <div class="fit-ov-mascot">AI</div>
+          <div><strong>${{d.coachTitle}}</strong><span>${{d.coachText}}</span></div>
+        </div>
+        <div class="fit-ov-section">
+          <h3>身体感受</h3>
+          <div>稳定程度 <span style="float:right">${{d.stability >= 80 ? "良好" : "中等"}}</span></div>
+          <div class="fit-ov-segments">${{segmentHtml(Math.round(d.stability / 12.5), 8, "amber")}}</div>
+          <div>左右对称性 <span style="float:right">${{d.symmetry >= 85 ? "良好" : "中等"}}</span></div>
+          <div class="fit-ov-segments">${{segmentHtml(Math.round(d.symmetry / 12.5), 8, "green")}}</div>
+        </div>
+        <div class="fit-ov-section">
+          <h3>肌肉激活</h3>
+          <div class="fit-ov-muscle"><div class="fit-ov-figure"></div><div>${{d.muscle}}<br><br>● 激活良好<br>● 激活中等<br>● 激活较弱</div></div>
+        </div>
+      </div>
+      <div class="fit-ov-bottom">
+        <button class="fit-ov-btn" onclick='${{setAction("previous")}}'>‹ 上一个</button>
+        <div class="fit-ov-count">进度&nbsp; ${{Math.min(5, d.valid)}} / 5</div>
+        <button class="fit-ov-btn" onclick='${{setAction("pause")}}'>⏸ ${{d.pauseLabel}}</button>
+        <div class="fit-ov-count">${{d.status === "active" ? `剩余 ${{d.remaining}} 秒` : d.grade !== "N/A" ? `${{d.grade}} 级 · ${{d.points}} 分` : ""}}</div>
+        <button class="fit-ov-btn primary" onclick='${{setAction(d.primaryAction)}}'>✓ ${{d.primaryLabel}}</button>
+      </div>
+    </div>
+  `;
+
+  const findTargetFrame = () => {{
+    const frames = Array.from(doc.querySelectorAll("iframe"));
+    return frames
+      .map((frame) => [frame, frame.getBoundingClientRect()])
+      .filter(([frame, rect]) => rect.width > 520 && rect.height > 100)
+      .sort((a, b) => (b[1].width * b[1].height) - (a[1].width * a[1].height))[0];
+  }};
+
+  const sync = () => {{
+    ensureStyle();
+    let overlay = doc.getElementById("fit-course-overlay");
+    if (!overlay) {{
+      overlay = doc.createElement("div");
+      overlay.id = "fit-course-overlay";
+      doc.body.appendChild(overlay);
+    }}
+    const target = findTargetFrame();
+    if (!target) {{
+      overlay.classList.add("fit-ov-hidden");
+      return;
+    }}
+    const [frame, rect] = target;
+    const videoHeight = Math.min(rect.height, rect.width * 9 / 16);
+    overlay.classList.remove("fit-ov-hidden");
+    overlay.style.left = `${{rect.left}}px`;
+    overlay.style.top = `${{rect.top}}px`;
+    overlay.style.width = `${{rect.width}}px`;
+    overlay.style.height = `${{videoHeight}}px`;
+    overlay.innerHTML = render(root.__fitOverlayData || data);
+  }};
+
+  sync();
+  if (!root.__fitOverlayInterval) {{
+    root.__fitOverlayInterval = root.setInterval(sync, 700);
+    root.addEventListener("resize", sync);
+    root.addEventListener("scroll", sync, true);
+  }}
+}})();
+</script>
+        """,
+        height=0,
+    )
+
 
 def render_sidebar():
     st.sidebar.title("🏋️ AI Fitness Coach")
-    exercise = st.sidebar.selectbox("选择动作", list(EXERCISES.keys()))
+    exercise = st.sidebar.selectbox("选择动作", list(EXERCISES.keys()), key="exercise_choice")
     duration_seconds = st.sidebar.slider("专家评判时长", min_value=15, max_value=120, value=30, step=15)
     camera_source_label = st.sidebar.radio(
         "摄像头来源",
@@ -485,7 +1067,7 @@ def render_sidebar():
     st.sidebar.write("1. 浏览器模式需要允许摄像头权限，本机模式会直接读取 Windows 摄像头")
     st.sidebar.write("2. 保持全身或训练部位在画面中")
     st.sidebar.write("3. 深蹲建议正面，俯卧撑建议侧面，弯举建议侧面或 45°")
-    st.sidebar.write("4. 已启用课程界面模式：640×426 / 10fps，旧帧会自动丢弃，兼顾观感和实时性")
+    st.sidebar.write("4. 已启用清晰课程界面模式：1280×720 / 15fps，旧帧会自动丢弃，兼顾观感和实时性")
     st.sidebar.caption("动作成功标准来自外挂知识库：knowledge/exercise_standards.json")
 
     rediscover_camera = False
@@ -496,58 +1078,6 @@ def render_sidebar():
     start_requested = st.sidebar.button("空格开始训练", type="primary", use_container_width=True)
     reset_requested = st.sidebar.button("重置本组训练")
     return exercise, CAMERA_SOURCES[camera_source_label], duration_seconds, start_requested, reset_requested, rediscover_camera
-
-
-def render_metrics(ctx):
-    if not ctx or not ctx.video_processor:
-        st.info("启动摄像头后，这里会显示实时计数、评分和反馈。")
-        return
-
-    snapshot = ctx.video_processor.snapshot
-    summary = snapshot.get("session_summary") or empty_session_summary()
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("标准完成", snapshot["count"])
-    c2.metric("尝试次数", snapshot.get("attempts", len(snapshot.get("history", []))))
-    c3.metric("最近评分", snapshot["score"])
-    c4.metric("处理耗时", f"{snapshot.get('process_ms', 0)} ms")
-
-    s1, s2, s3 = st.columns(3)
-    s1.metric("本轮积分", summary.get("points", 0))
-    s2.metric("专家评级", summary.get("grade", "N/A"))
-    s3.metric("评判剩余", f"{int(snapshot.get('session_remaining', 0))} 秒")
-
-    if snapshot["detected"] and snapshot.get("live_errors"):
-        st.warning(snapshot["live_message"])
-    elif snapshot["detected"]:
-        st.success(snapshot["live_message"])
-    else:
-        st.warning(snapshot["message"])
-
-    history = snapshot.get("history", [])
-    score_details = snapshot.get("score_details") or empty_score_details()
-    if history:
-        st.markdown("### 最近一次得分原因")
-        st.write(f"基础分：{score_details.get('base', 100)}，最近得分：{score_details.get('score', snapshot['score'])}")
-        st.write("扣分原因：" + score_details.get("deduction_text", "无扣分项"))
-        st.write("加分/保分原因：" + score_details.get("positive_text", "暂无"))
-        st.caption(snapshot["message"])
-
-    if history:
-        scores = [h["score"] for h in history]
-        all_errors = [err for h in history for err in h.get("errors", [])]
-        st.markdown("### 本组训练报告")
-        r1, r2, r3 = st.columns(3)
-        r1.metric("总尝试", len(history))
-        r2.metric("平均分", round(sum(scores) / len(scores), 1))
-        r3.metric("最高分", max(scores))
-
-        if all_errors:
-            common = Counter(all_errors).most_common(3)
-            st.write("最常见问题：" + "、".join([f"{name}({num}次)" for name, num in common]))
-        else:
-            st.write("本组动作整体很标准，继续保持。")
-
-        st.dataframe(history, use_container_width=True)
 
 
 def render_training_calendar():
@@ -608,6 +1138,11 @@ def main():
     )
     install_space_start_shortcut()
 
+    if "exercise_choice" not in st.session_state:
+        st.session_state.exercise_choice = list(EXERCISES.keys())[0]
+    overlay_action, overlay_token = read_overlay_action()
+    apply_pre_render_overlay_action(overlay_action)
+
     exercise, camera_source, duration_seconds, start_requested, reset_requested, rediscover_camera = render_sidebar()
     if "webrtc_key_version" not in st.session_state:
         st.session_state.webrtc_key_version = 0
@@ -621,36 +1156,33 @@ def main():
         stop_local_camera_track()
         st.session_state.webrtc_key_version += 1
 
-    col_video, col_panel = st.columns([2, 1])
-
     ctx = None
-    with col_video:
-        if camera_source == "local":
-            source_track = get_local_camera_track()
-            if source_track:
-                st.caption(st.session_state.get("local_camera_message", "已打开本机摄像头。"))
-                ctx = webrtc_streamer(
-                    key=f"ai-fitness-coach-local-{st.session_state.webrtc_key_version}",
-                    mode=WebRtcMode.RECVONLY,
-                    rtc_configuration=RTC_CONFIGURATION,
-                    video_processor_factory=FitnessVideoProcessor,
-                    source_video_track=source_track,
-                    async_processing=True,
-                    video_receiver_size=1,
-                    sendback_audio=False,
-                )
-            else:
-                st.error(st.session_state.get("local_camera_error", "未找到可用摄像头。"))
-        else:
+    if camera_source == "local":
+        source_track = get_local_camera_track()
+        if source_track:
+            st.caption(st.session_state.get("local_camera_message", "已打开本机摄像头。"))
             ctx = webrtc_streamer(
-                key=f"ai-fitness-coach-browser-{st.session_state.webrtc_key_version}",
-                mode=WebRtcMode.SENDRECV,
+                key=f"ai-fitness-coach-local-{st.session_state.webrtc_key_version}",
+                mode=WebRtcMode.RECVONLY,
                 rtc_configuration=RTC_CONFIGURATION,
                 video_processor_factory=FitnessVideoProcessor,
-                media_stream_constraints=BROWSER_CAMERA_CONSTRAINTS,
+                source_video_track=source_track,
                 async_processing=True,
                 video_receiver_size=1,
+                sendback_audio=False,
             )
+        else:
+            st.error(st.session_state.get("local_camera_error", "未找到可用摄像头。"))
+    else:
+        ctx = webrtc_streamer(
+            key=f"ai-fitness-coach-browser-{st.session_state.webrtc_key_version}",
+            mode=WebRtcMode.SENDRECV,
+            rtc_configuration=RTC_CONFIGURATION,
+            video_processor_factory=FitnessVideoProcessor,
+            media_stream_constraints=BROWSER_CAMERA_CONSTRAINTS,
+            async_processing=True,
+            video_receiver_size=1,
+        )
 
     if ctx and ctx.video_processor:
         ctx.video_processor.set_exercise(exercise)
@@ -658,9 +1190,17 @@ def main():
             ctx.video_processor.start_session(duration_seconds)
         if reset_requested:
             ctx.video_processor.reset()
+        if overlay_action == "start":
+            ctx.video_processor.start_session(duration_seconds)
+        elif overlay_action == "pause":
+            ctx.video_processor.toggle_pause()
+        elif overlay_action == "complete":
+            ctx.video_processor.complete_session()
 
-    with col_panel:
-        render_metrics(ctx)
+    if overlay_token:
+        mark_overlay_action_handled(overlay_token)
+
+    install_course_overlay(build_overlay_data(exercise, ctx, duration_seconds))
 
     render_pet_preview()
     render_training_calendar()
