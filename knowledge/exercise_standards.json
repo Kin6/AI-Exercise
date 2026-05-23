@@ -1,0 +1,90 @@
+{
+  "深蹲 Squat": {
+    "body_parts": ["股四头肌", "臀大肌", "腘绳肌", "核心"],
+    "valid_score": 85,
+    "critical_errors": ["深度不足", "动作幅度不足", "膝盖内扣"],
+    "phase": {
+      "enter_down_knee_angle": 125,
+      "exit_up_knee_angle": 170,
+      "min_phase_frames": 4,
+      "cooldown_frames": 7
+    },
+    "quality": {
+      "target_min_knee_angle": 100,
+      "min_rom_degrees": 60,
+      "max_knee_asymmetry": 18,
+      "max_back_tilt": 28,
+      "knee_valgus_ratio": 0.08
+    },
+    "penalties": {
+      "深度不足": 25,
+      "动作幅度不足": 25,
+      "膝盖内扣": 30,
+      "背部前倾": 18,
+      "左右不平衡": 12
+    },
+    "positives": {
+      "深度不足": "下蹲深度达标",
+      "动作幅度不足": "从站立到下蹲的活动范围完整",
+      "膝盖内扣": "膝盖方向稳定",
+      "背部前倾": "躯干控制稳定",
+      "左右不平衡": "左右发力均衡"
+    }
+  },
+  "俯卧撑 Push-up": {
+    "body_parts": ["胸肌", "肱三头肌", "肩前束", "核心"],
+    "valid_score": 85,
+    "critical_errors": ["下放不够", "动作幅度不足", "身体不成直线", "髋部塌陷或抬太高"],
+    "phase": {
+      "enter_down_elbow_angle": 130,
+      "exit_up_elbow_angle": 165,
+      "min_phase_frames": 4,
+      "cooldown_frames": 7
+    },
+    "quality": {
+      "target_min_elbow_angle": 90,
+      "min_rom_degrees": 60,
+      "min_body_angle": 165,
+      "max_hip_line_ratio": 0.08
+    },
+    "penalties": {
+      "下放不够": 25,
+      "动作幅度不足": 25,
+      "身体不成直线": 30,
+      "髋部塌陷或抬太高": 25
+    },
+    "positives": {
+      "下放不够": "下放深度达标",
+      "动作幅度不足": "从上方到下方的活动范围完整",
+      "身体不成直线": "肩髋踝保持直线",
+      "髋部塌陷或抬太高": "核心控制稳定"
+    }
+  },
+  "弯举 Bicep Curl": {
+    "body_parts": ["肱二头肌", "肱肌", "前臂"],
+    "valid_score": 85,
+    "critical_errors": ["动作幅度不足", "肘部晃动", "借力摆动"],
+    "phase": {
+      "enter_up_elbow_angle": 80,
+      "exit_down_elbow_angle": 160,
+      "min_phase_frames": 4,
+      "cooldown_frames": 7
+    },
+    "quality": {
+      "target_min_elbow_angle": 55,
+      "min_rom_degrees": 85,
+      "max_elbow_drift_ratio": 0.18,
+      "max_shoulder_drift_ratio": 0.14
+    },
+    "penalties": {
+      "动作幅度不足": 25,
+      "肘部晃动": 25,
+      "借力摆动": 20
+    },
+    "positives": {
+      "动作幅度不足": "弯举幅度完整",
+      "肘部晃动": "肘部位置稳定",
+      "借力摆动": "没有明显借力摆动"
+    }
+  }
+}
