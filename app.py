@@ -1,8 +1,11 @@
 import importlib
 import json
+import base64
 import threading
 import time
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import av
 import streamlit as st
@@ -63,11 +66,79 @@ SESSION_ACTIVE = "active"
 SESSION_PAUSED = "paused"
 SESSION_FINISHED = "finished"
 
+HUD_SERVER_PORT = 8765
+HUD_SERVER_URL = f"http://127.0.0.1:{HUD_SERVER_PORT}/hud"
+MUSCLE_IMAGE_PATH = Path(__file__).with_name("assets") / "super-muscle-man-outline.png"
+
+_HUD_DATA_LOCK = threading.Lock()
+_LATEST_HUD_DATA = {}
+_HUD_SERVER_STARTED = False
+_MUSCLE_IMAGE_DATA_URI = None
+
 TUTORIAL_VIDEO_SOURCES = {
     "深蹲 Squat": "",
     "俯卧撑 Push-up": "",
     "弯举 Bicep Curl": "",
 }
+
+
+def muscle_image_data_uri():
+    global _MUSCLE_IMAGE_DATA_URI
+    if _MUSCLE_IMAGE_DATA_URI is not None:
+        return _MUSCLE_IMAGE_DATA_URI
+    try:
+        encoded = base64.b64encode(MUSCLE_IMAGE_PATH.read_bytes()).decode("ascii")
+        _MUSCLE_IMAGE_DATA_URI = f"data:image/png;base64,{encoded}"
+    except OSError:
+        _MUSCLE_IMAGE_DATA_URI = ""
+    return _MUSCLE_IMAGE_DATA_URI
+
+
+def publish_hud_data(data):
+    with _HUD_DATA_LOCK:
+        _LATEST_HUD_DATA.clear()
+        _LATEST_HUD_DATA.update(data)
+
+
+class HudStateHandler(BaseHTTPRequestHandler):
+    def _send_headers(self, status=200, content_type="application/json"):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def do_OPTIONS(self):
+        self._send_headers(204)
+
+    def do_GET(self):
+        if self.path.split("?", 1)[0] != "/hud":
+            self._send_headers(404)
+            self.wfile.write(b"{}")
+            return
+        with _HUD_DATA_LOCK:
+            payload = dict(_LATEST_HUD_DATA)
+        self._send_headers(200)
+        self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+    def log_message(self, format, *args):
+        return
+
+
+def ensure_hud_server():
+    global _HUD_SERVER_STARTED
+    if _HUD_SERVER_STARTED:
+        return
+    try:
+        server = ThreadingHTTPServer(("0.0.0.0", HUD_SERVER_PORT), HudStateHandler)
+    except OSError:
+        _HUD_SERVER_STARTED = True
+        return
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    _HUD_SERVER_STARTED = True
 
 
 def empty_score_details():
@@ -444,7 +515,10 @@ class FitnessVideoProcessor(VideoProcessorBase):
             banner_status = session_status
             banner_remaining = remaining
             banner_summary = summary
+            snapshot_for_hud = dict(self.snapshot)
+            duration_for_hud = self.session_duration
 
+        publish_hud_data(build_overlay_data_from_snapshot(exercise_name, snapshot_for_hud, duration_for_hud))
         output_frame = draw_exercise_joint_highlights(pose_result.annotated_frame, exercise_name, pose_result.landmarks)
         output_frame = draw_session_banner(output_frame, banner_status, banner_remaining, banner_summary)
         return av.VideoFrame.from_ndarray(output_frame, format="bgr24")
@@ -577,8 +651,15 @@ def exercise_overlay_copy(exercise_name):
     }
 
 
-def build_overlay_data(exercise_name, ctx, duration_seconds):
-    snapshot = ctx.video_processor.snapshot if ctx and ctx.video_processor else {}
+def active_muscle_regions(exercise_name):
+    if "寮妇" in exercise_name or "Bicep" in exercise_name:
+        return ["biceps", "forearms", "shoulders"]
+    if "淇崸" in exercise_name or "Push" in exercise_name:
+        return ["chest", "triceps", "shoulders", "core"]
+    return ["quads", "glutes", "core"]
+
+
+def build_overlay_data_from_snapshot(exercise_name, snapshot, duration_seconds):
     summary = snapshot.get("session_summary") or empty_session_summary()
     status = snapshot.get("session_status", SESSION_IDLE)
     valid = int(snapshot.get("count", 0) or 0)
@@ -631,11 +712,528 @@ def build_overlay_data(exercise_name, ctx, duration_seconds):
         "primaryAction": primary_action,
         "primaryLabel": primary_label,
         "pauseLabel": pause_label,
+        "activeMuscles": active_muscle_regions(exercise_name),
+        "muscleImage": muscle_image_data_uri(),
+        "hudEndpoint": HUD_SERVER_URL,
+        "hudPort": HUD_SERVER_PORT,
     }
 
 
-def install_course_overlay(data):
+def build_overlay_data(exercise_name, ctx, duration_seconds):
+    snapshot = ctx.video_processor.snapshot if ctx and ctx.video_processor else {}
+    return build_overlay_data_from_snapshot(exercise_name, snapshot, duration_seconds)
+
+
+def _install_course_overlay_legacy(data):
     payload = json.dumps(data, ensure_ascii=False)
+    components.html(
+        f"""
+<script>
+(() => {{
+  const data = {payload};
+  const root = window.parent;
+  const doc = root.document;
+  root.__fitOverlayData = data;
+  if (root.__fitOverlayInterval) {{
+    root.clearInterval(root.__fitOverlayInterval);
+    root.__fitOverlayInterval = null;
+  }}
+
+  if (!root.__fitOverlayAction) {{
+    root.__fitOverlayAction = (action) => {{
+      const url = new URL(root.location.href);
+      url.searchParams.set("fit_action", action);
+      url.searchParams.set("fit_token", String(Date.now()));
+      root.location.href = url.toString();
+    }};
+  }}
+
+  const css = `
+    #fit-course-overlay {{
+      position: absolute;
+      z-index: 50;
+      pointer-events: none;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+      color: rgba(255,255,250,.96);
+      text-rendering: geometricPrecision;
+      -webkit-font-smoothing: antialiased;
+      contain: layout paint style;
+    }}
+    #fit-course-overlay * {{ box-sizing: border-box; }}
+    .fit-ov-root {{
+      --hud: clamp(.66, .78vw, .82);
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      border-radius: 2px;
+      background: linear-gradient(90deg, rgba(0,0,0,.16), transparent 38%, rgba(0,0,0,.14));
+    }}
+    .fit-ov-card {{
+      position: absolute;
+      pointer-events: auto;
+      border: 1px solid rgba(255,255,255,.18);
+      background: rgba(28,28,28,.30);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.10), 0 14px 34px rgba(0,0,0,.16);
+      backdrop-filter: blur(14px) saturate(118%);
+      -webkit-backdrop-filter: blur(14px) saturate(118%);
+    }}
+    .fit-ov-top {{
+      position: absolute;
+      left: 2%;
+      top: 2.5%;
+      display: flex;
+      gap: calc(14px * var(--hud));
+      align-items: center;
+      pointer-events: auto;
+    }}
+    .fit-ov-back {{
+      width: calc(46px * var(--hud));
+      height: calc(46px * var(--hud));
+      border: 0;
+      border-radius: 999px;
+      background: rgba(255,255,255,.90);
+      color: #202333;
+      font-size: calc(30px * var(--hud));
+      line-height: 1;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+    }}
+    .fit-ov-title h2 {{
+      margin: 0 0 calc(6px * var(--hud));
+      font-size: calc(29px * var(--hud));
+      line-height: 1;
+      letter-spacing: 0;
+      font-weight: 800;
+    }}
+    .fit-ov-title p {{
+      margin: 0;
+      font-size: calc(16px * var(--hud));
+      line-height: 1.2;
+      color: rgba(255,255,250,.82);
+      max-width: 34ch;
+    }}
+    .fit-ov-pill {{
+      position: absolute;
+      right: 2.2%;
+      top: 2.8%;
+      padding: calc(8px * var(--hud)) calc(17px * var(--hud));
+      border-radius: 999px;
+      background: rgba(28,28,28,.28);
+      border: 1px solid rgba(255,255,255,.16);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      font-size: calc(15px * var(--hud));
+      font-weight: 760;
+      pointer-events: auto;
+    }}
+    .fit-ov-tutorial {{
+      left: 2.2%;
+      top: 14%;
+      width: min(22%, 260px);
+      height: min(18%, 145px);
+      border-radius: calc(16px * var(--hud));
+      overflow: hidden;
+    }}
+    .fit-ov-tutorial video, .fit-ov-video-placeholder {{
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }}
+    .fit-ov-video-placeholder {{
+      display: grid;
+      place-items: center;
+      background: radial-gradient(circle at 55% 45%, rgba(255,255,255,.20), rgba(255,255,255,.04));
+    }}
+    .fit-ov-video-title {{
+      position: absolute;
+      top: calc(12px * var(--hud));
+      left: calc(15px * var(--hud));
+      font-size: calc(14px * var(--hud));
+      font-weight: 750;
+    }}
+    .fit-ov-play {{
+      width: calc(46px * var(--hud));
+      height: calc(46px * var(--hud));
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.28);
+      background: rgba(30,30,38,.45);
+      display: grid;
+      place-items: center;
+      font-size: calc(24px * var(--hud));
+    }}
+    .fit-ov-time {{
+      position: absolute;
+      left: calc(15px * var(--hud));
+      bottom: calc(12px * var(--hud));
+      font-size: calc(13px * var(--hud));
+      font-weight: 700;
+    }}
+    .fit-ov-progress {{
+      left: 3.1%;
+      bottom: 15.5%;
+      width: min(20%, 260px);
+      min-width: 190px;
+      border-radius: calc(18px * var(--hud));
+      padding: calc(18px * var(--hud)) calc(20px * var(--hud));
+    }}
+    .fit-ov-progress h3, .fit-ov-coach h3 {{
+      margin: 0 0 calc(14px * var(--hud));
+      font-size: calc(16px * var(--hud));
+      font-weight: 800;
+    }}
+    .fit-ov-ring-row {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: calc(14px * var(--hud));
+    }}
+    .fit-ov-ring {{
+      position: relative;
+      width: calc(72px * var(--hud));
+      height: calc(72px * var(--hud));
+      flex: 0 0 auto;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      background: conic-gradient(#b9ef75 calc(var(--p) * 1%), rgba(255,255,255,.18) 0);
+      font-size: calc(23px * var(--hud));
+      font-weight: 800;
+    }}
+    .fit-ov-ring::before {{
+      content: "";
+      position: absolute;
+      width: calc(55px * var(--hud));
+      height: calc(55px * var(--hud));
+      border-radius: inherit;
+      background: rgba(64,64,64,.58);
+    }}
+    .fit-ov-ring span {{ position: relative; }}
+    .fit-ov-meter {{
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: calc(6px * var(--hud)) calc(10px * var(--hud));
+      align-items: center;
+      margin: calc(10px * var(--hud)) 0;
+      font-size: calc(13px * var(--hud));
+      font-weight: 680;
+    }}
+    .fit-ov-bar {{
+      grid-column: 1 / -1;
+      height: calc(6px * var(--hud));
+      border-radius: 999px;
+      background: rgba(255,255,255,.2);
+      overflow: hidden;
+    }}
+    .fit-ov-bar i {{
+      display: block;
+      height: 100%;
+      width: calc(var(--v) * 1%);
+      border-radius: inherit;
+      background: #b9ef75;
+    }}
+    .fit-ov-coach {{
+      right: 3%;
+      top: 13%;
+      width: min(20%, 275px);
+      min-width: 220px;
+      height: auto;
+      max-height: 66%;
+      border-radius: calc(18px * var(--hud));
+      padding: calc(18px * var(--hud));
+    }}
+    .fit-ov-bubble {{
+      display: grid;
+      grid-template-columns: calc(48px * var(--hud)) 1fr;
+      gap: calc(12px * var(--hud));
+      align-items: center;
+      padding: calc(10px * var(--hud));
+      border-radius: calc(14px * var(--hud));
+      background: rgba(255,255,255,.075);
+      margin-bottom: calc(16px * var(--hud));
+    }}
+    .fit-ov-mascot {{
+      width: calc(46px * var(--hud));
+      height: calc(46px * var(--hud));
+      border-radius: calc(15px * var(--hud));
+      display: grid;
+      place-items: center;
+      background: linear-gradient(145deg, #8b7af7, #6554d9);
+      font-weight: 900;
+    }}
+    .fit-ov-bubble strong {{
+      display: block;
+      color: #ffd558;
+      font-size: calc(13px * var(--hud));
+      margin-bottom: calc(5px * var(--hud));
+    }}
+    .fit-ov-bubble span {{
+      display: block;
+      font-size: calc(12px * var(--hud));
+      line-height: 1.25;
+      color: rgba(255,255,250,.86);
+    }}
+    .fit-ov-section {{
+      border-top: 1px solid rgba(255,255,255,.12);
+      padding-top: calc(14px * var(--hud));
+      margin-top: calc(14px * var(--hud));
+      font-size: calc(12px * var(--hud));
+    }}
+    .fit-ov-segments {{
+      display: flex;
+      gap: calc(5px * var(--hud));
+      margin: calc(9px * var(--hud)) 0 calc(12px * var(--hud));
+    }}
+    .fit-ov-segments i {{
+      flex: 1;
+      height: calc(7px * var(--hud));
+      border-radius: 999px;
+      background: rgba(255,255,255,.16);
+    }}
+    .fit-ov-segments i.on.amber {{ background: #ffbe55; }}
+    .fit-ov-segments i.on.green {{ background: #a8ea70; }}
+    .fit-ov-muscle {{
+      display: flex;
+      align-items: center;
+      gap: calc(12px * var(--hud));
+      color: rgba(255,255,250,.82);
+      font-size: calc(11px * var(--hud));
+    }}
+    .fit-ov-figure {{
+      width: calc(64px * var(--hud));
+      height: calc(98px * var(--hud));
+      border: 1px solid rgba(255,255,255,.35);
+      border-radius: 999px 999px 22px 22px;
+      background: linear-gradient(rgba(255,255,255,.08), rgba(255,255,255,.02));
+    }}
+    .fit-ov-bottom {{
+      position: absolute;
+      left: 2.2%;
+      right: 2.2%;
+      bottom: 2.5%;
+      height: calc(58px * var(--hud));
+      border-radius: calc(18px * var(--hud));
+      background: rgba(38,38,38,.38);
+      border: 1px solid rgba(255,255,255,.13);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      display: grid;
+      grid-template-columns: minmax(110px, 1fr) minmax(100px, 1fr) minmax(110px, 1fr) minmax(100px, 1fr) minmax(150px, 1.25fr);
+      align-items: center;
+      gap: calc(12px * var(--hud));
+      padding: 0 calc(18px * var(--hud));
+      pointer-events: auto;
+    }}
+    .fit-ov-btn {{
+      height: calc(40px * var(--hud));
+      border: 0;
+      border-radius: 999px;
+      color: rgba(255,255,250,.96);
+      background: rgba(255,255,255,.08);
+      font-size: calc(15px * var(--hud));
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: calc(8px * var(--hud));
+      cursor: pointer;
+      white-space: nowrap;
+    }}
+    .fit-ov-btn.primary {{
+      background: linear-gradient(100deg, #6d83ff, #9354ea);
+    }}
+    .fit-ov-count {{
+      text-align: center;
+      font-size: calc(16px * var(--hud));
+      font-weight: 780;
+      color: rgba(255,255,250,.86);
+      white-space: nowrap;
+    }}
+    .fit-ov-hidden {{ display: none !important; }}
+    @media (max-width: 760px) {{
+      .fit-ov-root {{ --hud: .58; }}
+      .fit-ov-tutorial {{ display: none; }}
+      .fit-ov-coach {{ width: 34%; min-width: 170px; right: 2%; }}
+      .fit-ov-progress {{ width: 28%; min-width: 150px; }}
+      .fit-ov-bottom {{ grid-template-columns: 1fr 1fr 1fr; }}
+      .fit-ov-bottom .fit-ov-count:nth-of-type(2), .fit-ov-bottom .fit-ov-btn.primary {{ display: none; }}
+    }}
+  `;
+
+  const ensureStyle = () => {{
+    let style = doc.getElementById("fit-course-overlay-style");
+    if (!style) {{
+      style = doc.createElement("style");
+      style.id = "fit-course-overlay-style";
+      doc.head.appendChild(style);
+    }}
+    if (style.textContent !== css) style.textContent = css;
+  }};
+
+  const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({{
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  }}[ch]));
+  const segmentHtml = (count, total, color) => Array.from({{ length: total }}, (_, i) => `<i class="${{i < count ? `on ${{color}}` : ""}}"></i>`).join("");
+  const setAction = (action) => `root.__fitOverlayAction("${{action}}")`;
+  const render = (d) => `
+    <div class="fit-ov-root">
+      <div class="fit-ov-top">
+        <button class="fit-ov-back" onclick='${{setAction("previous")}}'>‹</button>
+        <div class="fit-ov-title">
+          <h2>${{escapeHtml(d.title)}}</h2>
+          <p>${{escapeHtml(d.subtitle)}}</p>
+        </div>
+      </div>
+      <div class="fit-ov-pill">动作要点</div>
+      <div class="fit-ov-card fit-ov-tutorial">
+        ${{d.tutorialUrl ? `<video src="${{escapeHtml(d.tutorialUrl)}}" controls playsinline></video>` : `<div class="fit-ov-video-placeholder"><div class="fit-ov-play">▶</div></div>`}}
+        <div class="fit-ov-video-title">教学视频</div>
+        <div class="fit-ov-time">${{d.tutorialUrl ? "00:00 / 00:00" : "待接入视频"}}</div>
+      </div>
+      <div class="fit-ov-card fit-ov-progress">
+        <div class="fit-ov-ring-row">
+          <h3>动作完成度</h3>
+          <div class="fit-ov-ring" style="--p:${{Number(d.completion) || 0}}"><span>${{Number(d.completion) || 0}}%</span></div>
+        </div>
+        ${{[
+          [d.metricA, d.formScore],
+          [d.metricB, d.stability],
+          [d.metricC, d.symmetry]
+        ].map(([label, value]) => `<div class="fit-ov-meter"><span>${{escapeHtml(label)}}</span><b>${{Number(value) || 0}}%</b><div class="fit-ov-bar" style="--v:${{Number(value) || 0}}"><i></i></div></div>`).join("")}}
+      </div>
+      <div class="fit-ov-card fit-ov-coach">
+        <h3>AI 正在观察</h3>
+        <div class="fit-ov-bubble">
+          <div class="fit-ov-mascot">AI</div>
+          <div><strong>${{escapeHtml(d.coachTitle)}}</strong><span>${{escapeHtml(d.coachText)}}</span></div>
+        </div>
+        <div class="fit-ov-section">
+          <h3>身体感受</h3>
+          <div>稳定程度 <span style="float:right">${{d.stability >= 80 ? "良好" : "中等"}}</span></div>
+          <div class="fit-ov-segments">${{segmentHtml(Math.round((Number(d.stability) || 0) / 12.5), 8, "amber")}}</div>
+          <div>左右对称性 <span style="float:right">${{d.symmetry >= 85 ? "良好" : "中等"}}</span></div>
+          <div class="fit-ov-segments">${{segmentHtml(Math.round((Number(d.symmetry) || 0) / 12.5), 8, "green")}}</div>
+        </div>
+        <div class="fit-ov-section">
+          <h3>肌肉激活</h3>
+          <div class="fit-ov-muscle"><div class="fit-ov-figure"></div><div>${{escapeHtml(d.muscle)}}<br><br>● 激活良好<br>● 激活中等<br>● 激活较弱</div></div>
+        </div>
+      </div>
+      <div class="fit-ov-bottom">
+        <button class="fit-ov-btn" onclick='${{setAction("previous")}}'>‹ 上一个</button>
+        <div class="fit-ov-count">进度&nbsp; ${{Math.min(5, Number(d.valid) || 0)}} / 5</div>
+        <button class="fit-ov-btn" onclick='${{setAction("pause")}}'>Ⅱ ${{escapeHtml(d.pauseLabel)}}</button>
+        <div class="fit-ov-count">${{d.status === "active" ? `剩余 ${{Number(d.remaining) || 0}} 秒` : d.grade !== "N/A" ? `${{escapeHtml(d.grade)}} 级 · ${{Number(d.points) || 0}} 分` : ""}}</div>
+        <button class="fit-ov-btn primary" onclick='${{setAction(d.primaryAction)}}'>✓ ${{escapeHtml(d.primaryLabel)}}</button>
+      </div>
+    </div>
+  `;
+
+  const updateOverlayData = (next) => {{
+    if (!next || typeof next !== "object") return;
+    root.__fitOverlayData = {{ ...(root.__fitOverlayData || data), ...next }};
+    const overlay = doc.getElementById("fit-course-overlay");
+    if (overlay) overlay.dataset.fitKey = "";
+    try {{ syncOverlay(); }} catch (_) {{}}
+  }};
+
+  const startHudPolling = () => {{
+    const endpoint = data.hudPort
+      ? `${{root.location.protocol}}//${{root.location.hostname}}:${{data.hudPort}}/hud`
+      : data.hudEndpoint;
+    if (!endpoint) return;
+    if (root.__fitHudPoll && root.__fitHudPollEndpoint !== endpoint) {{
+      root.clearInterval(root.__fitHudPoll);
+      root.__fitHudPoll = null;
+    }}
+    root.__fitHudPollEndpoint = endpoint;
+    if (root.__fitHudPoll) return;
+    const poll = async () => {{
+      try {{
+        const response = await fetch(`${{endpoint}}?t=${{Date.now()}}`, {{ cache: "no-store" }});
+        if (!response.ok) return;
+        updateOverlayData(await response.json());
+      }} catch (_) {{}}
+    }};
+    poll();
+    root.__fitHudPoll = root.setInterval(poll, 250);
+  }};
+
+  const findTargetFrame = () => {{
+    const frames = Array.from(doc.querySelectorAll("iframe"));
+    return frames
+      .map((frame) => [frame, frame.getBoundingClientRect()])
+      .filter(([frame, rect]) => rect.width > 520 && rect.height > 180 && !frame.srcdoc)
+      .sort((a, b) => (b[1].width * b[1].height) - (a[1].width * a[1].height))[0];
+  }};
+
+  const mount = () => {{
+    ensureStyle();
+    let overlay = doc.getElementById("fit-course-overlay");
+    if (!overlay) {{
+      overlay = doc.createElement("div");
+      overlay.id = "fit-course-overlay";
+    }}
+    const target = findTargetFrame();
+    if (!target) {{
+      overlay.classList.add("fit-ov-hidden");
+      return null;
+    }}
+    const [frame, rect] = target;
+    const host = frame.parentElement || frame;
+    if (root.getComputedStyle(host).position === "static") host.style.position = "relative";
+    host.style.overflow = "visible";
+    if (overlay.parentElement !== host) host.appendChild(overlay);
+    overlay.classList.remove("fit-ov-hidden");
+    const nextData = root.__fitOverlayData || data;
+    const nextKey = JSON.stringify(nextData);
+    if (overlay.dataset.fitKey !== nextKey) {{
+      overlay.innerHTML = render(nextData);
+      overlay.dataset.fitKey = nextKey;
+    }}
+    return {{ frame, host, overlay }};
+  }};
+
+  const syncPosition = () => {{
+    const mounted = mount();
+    if (!mounted) return;
+    const {{ frame, host, overlay }} = mounted;
+    const rect = frame.getBoundingClientRect();
+    const hostRect = host.getBoundingClientRect();
+    const videoHeight = Math.min(rect.height, rect.width * 9 / 16);
+    overlay.style.left = `${{rect.left - hostRect.left}}px`;
+    overlay.style.top = `${{rect.top - hostRect.top}}px`;
+    overlay.style.width = `${{rect.width}}px`;
+    overlay.style.height = `${{videoHeight}}px`;
+  }};
+
+  syncPosition();
+  if (!root.__fitOverlayRaf) {{
+    let last = 0;
+    const loop = (now) => {{
+      if (now - last > 80) {{
+        last = now;
+        try {{ syncPosition(); }} catch (_) {{}}
+      }}
+      root.__fitOverlayRaf = root.requestAnimationFrame(loop);
+    }};
+    root.__fitOverlayRaf = root.requestAnimationFrame(loop);
+    root.addEventListener("resize", syncPosition);
+    root.addEventListener("scroll", syncPosition, true);
+  }}
+}})();
+</script>
+        """,
+        height=1,
+    )
+    return
     components.html(
         f"""
 <script>
@@ -1054,6 +1652,753 @@ def install_course_overlay(data):
     )
 
 
+def install_course_overlay(data):
+    payload = json.dumps(data, ensure_ascii=False)
+    components.html(
+        f"""
+<script>
+(() => {{
+  const data = {payload};
+  const root = window.parent;
+  const doc = root.document;
+  root.__fitOverlayData = data;
+  if (root.__fitOverlayInterval) {{
+    root.clearInterval(root.__fitOverlayInterval);
+    root.__fitOverlayInterval = null;
+  }}
+
+  if (!root.__fitOverlayAction) {{
+    root.__fitOverlayAction = (action) => {{
+      const url = new URL(root.location.href);
+      url.searchParams.set("fit_action", action);
+      url.searchParams.set("fit_token", String(Date.now()));
+      root.location.href = url.toString();
+    }};
+  }}
+
+  const css = `
+    #fit-course-overlay {{
+      position: absolute;
+      z-index: 60;
+      pointer-events: none;
+      color: rgba(255,255,250,.96);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: geometricPrecision;
+      contain: layout paint style;
+    }}
+    #fit-course-overlay * {{ box-sizing: border-box; }}
+    .fit-ov-root {{
+      --w: 100%;
+      --h: 100%;
+      --u: var(--fit-scale, .7);
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      border-radius: 0;
+      background:
+        radial-gradient(circle at 50% 48%, rgba(255,255,255,0) 0 23%, rgba(0,0,0,.10) 48%, rgba(0,0,0,.24) 100%),
+        linear-gradient(90deg, rgba(0,0,0,.18), rgba(0,0,0,.02) 28%, rgba(0,0,0,.02) 68%, rgba(0,0,0,.18));
+    }}
+    .fit-ov-card {{
+      position: absolute;
+      pointer-events: auto;
+      border: 1px solid rgba(255,255,255,.18);
+      background: rgba(38,38,38,.36);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.10), 0 calc(18px * var(--u)) calc(52px * var(--u)) rgba(0,0,0,.20);
+      backdrop-filter: blur(calc(16px * var(--u))) saturate(116%);
+      -webkit-backdrop-filter: blur(calc(16px * var(--u))) saturate(116%);
+    }}
+    .fit-ov-header {{
+      position: absolute;
+      left: 1.7%;
+      top: 2.7%;
+      height: 8%;
+      display: flex;
+      align-items: flex-start;
+      gap: calc(24px * var(--u));
+      pointer-events: auto;
+      text-shadow: 0 calc(1px * var(--u)) calc(8px * var(--u)) rgba(0,0,0,.32);
+    }}
+    .fit-ov-back {{
+      width: calc(56px * var(--u));
+      height: calc(56px * var(--u));
+      min-width: 32px;
+      min-height: 32px;
+      border: 0;
+      border-radius: 999px;
+      background: rgba(247,248,252,.92);
+      color: rgb(31,35,57);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      box-shadow: 0 calc(6px * var(--u)) calc(18px * var(--u)) rgba(0,0,0,.12);
+    }}
+    .fit-ov-back svg {{
+      width: 46%;
+      height: 46%;
+      stroke-width: 3.2;
+    }}
+    .fit-ov-divider {{
+      width: 1px;
+      height: calc(31px * var(--u));
+      margin-top: calc(12px * var(--u));
+      background: rgba(255,255,255,.24);
+    }}
+    .fit-ov-title h2 {{
+      margin: calc(2px * var(--u)) 0 calc(10px * var(--u));
+      font-size: calc(32px * var(--u));
+      line-height: .96;
+      letter-spacing: 0;
+      font-weight: 820;
+      color: rgba(255,255,250,.98);
+    }}
+    .fit-ov-title p {{
+      margin: 0;
+      font-size: calc(20px * var(--u));
+      line-height: 1.1;
+      font-weight: 430;
+      color: rgba(255,255,250,.84);
+    }}
+    .fit-ov-info {{
+      display: inline-grid;
+      place-items: center;
+      width: calc(23px * var(--u));
+      height: calc(23px * var(--u));
+      margin-left: calc(10px * var(--u));
+      border: 1.5px solid rgba(255,255,255,.55);
+      border-radius: 999px;
+      font-size: calc(15px * var(--u));
+      font-weight: 650;
+      vertical-align: calc(3px * var(--u));
+      color: rgba(255,255,250,.74);
+    }}
+    .fit-ov-pill {{
+      position: absolute;
+      right: 2.5%;
+      top: 3.3%;
+      height: calc(56px * var(--u));
+      min-height: 34px;
+      padding: 0 calc(27px * var(--u));
+      display: flex;
+      align-items: center;
+      gap: calc(10px * var(--u));
+      border-radius: 999px;
+      background: rgba(50,50,50,.36);
+      border: 1px solid rgba(255,255,255,.08);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+      backdrop-filter: blur(calc(12px * var(--u)));
+      -webkit-backdrop-filter: blur(calc(12px * var(--u)));
+      font-size: calc(21px * var(--u));
+      font-weight: 780;
+      pointer-events: auto;
+      text-shadow: 0 calc(1px * var(--u)) calc(8px * var(--u)) rgba(0,0,0,.28);
+    }}
+    .fit-ov-pill svg {{
+      width: calc(23px * var(--u));
+      height: calc(23px * var(--u));
+      stroke-width: 2.5;
+    }}
+    .fit-ov-tutorial {{
+      left: 2.35%;
+      top: 14.1%;
+      width: 25.85%;
+      height: 23.15%;
+      border-radius: calc(20px * var(--u));
+      overflow: hidden;
+      background: rgba(255,255,255,.08);
+    }}
+    .fit-ov-video-bg {{
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(rgba(0,0,0,.10), rgba(0,0,0,.25)),
+        radial-gradient(circle at 55% 35%, rgba(255,255,255,.16), rgba(255,255,255,.03));
+    }}
+    .fit-ov-tutorial video {{
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }}
+    .fit-ov-video-title {{
+      position: absolute;
+      left: calc(24px * var(--u));
+      top: calc(24px * var(--u));
+      font-size: calc(20px * var(--u));
+      font-weight: 760;
+      text-shadow: 0 calc(1px * var(--u)) calc(8px * var(--u)) rgba(0,0,0,.36);
+    }}
+    .fit-ov-play {{
+      position: absolute;
+      left: 50%;
+      top: 52%;
+      transform: translate(-50%, -50%);
+      width: calc(52px * var(--u));
+      height: calc(52px * var(--u));
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.28);
+      background: rgba(43,45,62,.46);
+      display: grid;
+      place-items: center;
+      color: rgba(255,255,250,.95);
+    }}
+    .fit-ov-play svg {{
+      width: 48%;
+      height: 48%;
+      margin-left: 6%;
+      fill: currentColor;
+    }}
+    .fit-ov-time {{
+      position: absolute;
+      left: calc(24px * var(--u));
+      bottom: calc(18px * var(--u));
+      font-size: calc(19px * var(--u));
+      font-weight: 760;
+      text-shadow: 0 calc(1px * var(--u)) calc(8px * var(--u)) rgba(0,0,0,.38);
+    }}
+    .fit-ov-expand {{
+      position: absolute;
+      right: calc(20px * var(--u));
+      bottom: calc(17px * var(--u));
+      width: calc(24px * var(--u));
+      height: calc(24px * var(--u));
+      opacity: .9;
+    }}
+    .fit-ov-progress {{
+      left: 3.65%;
+      top: 44.72%;
+      width: 21.35%;
+      height: 38.4%;
+      border-radius: calc(19px * var(--u));
+      padding: calc(43px * var(--u)) calc(27px * var(--u)) calc(28px * var(--u));
+      background: rgba(54,54,54,.38);
+    }}
+    .fit-ov-progress-title {{
+      position: relative;
+      margin: 0 0 calc(58px * var(--u));
+      font-size: calc(20px * var(--u));
+      font-weight: 760;
+      color: rgba(255,255,250,.74);
+    }}
+    .fit-ov-progress-title::before {{
+      content: "";
+      position: absolute;
+      left: calc(46px * var(--u));
+      top: calc(-21px * var(--u));
+      width: calc(13px * var(--u));
+      height: calc(13px * var(--u));
+      border-radius: 999px;
+      background: rgba(255,255,255,.72);
+      filter: blur(calc(3px * var(--u)));
+    }}
+    .fit-ov-progress-title::after {{
+      content: "";
+      position: absolute;
+      left: 0;
+      bottom: calc(-18px * var(--u));
+      width: calc(110px * var(--u));
+      height: 1px;
+      background: rgba(255,255,255,.45);
+    }}
+    .fit-ov-ring {{
+      position: absolute;
+      right: calc(40px * var(--u));
+      top: calc(31px * var(--u));
+      width: calc(114px * var(--u));
+      height: calc(114px * var(--u));
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      background: conic-gradient(#b6eb78 calc(var(--p) * 1%), rgba(255,255,255,.18) 0);
+      box-shadow: 0 0 calc(14px * var(--u)) rgba(182,235,120,.16);
+    }}
+    .fit-ov-ring::before {{
+      content: "";
+      position: absolute;
+      inset: calc(13px * var(--u));
+      border-radius: inherit;
+      background: rgba(70,70,70,.60);
+    }}
+    .fit-ov-ring span {{
+      position: relative;
+      font-size: calc(39px * var(--u));
+      font-weight: 760;
+      letter-spacing: 0;
+      text-shadow: 0 calc(1px * var(--u)) calc(6px * var(--u)) rgba(0,0,0,.25);
+    }}
+    .fit-ov-ring small {{
+      font-size: .45em;
+      font-weight: 740;
+    }}
+    .fit-ov-meter {{
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: calc(11px * var(--u)) calc(14px * var(--u));
+      align-items: center;
+      margin-top: calc(26px * var(--u));
+      font-size: calc(19px * var(--u));
+      font-weight: 650;
+      text-shadow: 0 calc(1px * var(--u)) calc(6px * var(--u)) rgba(0,0,0,.26);
+    }}
+    .fit-ov-meter b {{
+      font-weight: 720;
+    }}
+    .fit-ov-bar {{
+      grid-column: 1 / -1;
+      height: calc(7px * var(--u));
+      border-radius: 999px;
+      background: rgba(255,255,255,.28);
+      overflow: hidden;
+    }}
+    .fit-ov-bar i {{
+      display: block;
+      width: calc(var(--v) * 1%);
+      height: 100%;
+      border-radius: inherit;
+      background: #b7ec76;
+      box-shadow: 0 0 calc(10px * var(--u)) rgba(183,236,118,.28);
+    }}
+    .fit-ov-coach {{
+      right: 5.05%;
+      top: 13.18%;
+      width: 21.16%;
+      height: 70.3%;
+      border-radius: calc(23px * var(--u));
+      padding: calc(25px * var(--u)) calc(23px * var(--u));
+      background: rgba(33,33,33,.50);
+      border-color: rgba(255,255,255,.14);
+    }}
+    .fit-ov-coach-title {{
+      margin: 0;
+      font-size: calc(18px * var(--u));
+      font-weight: 720;
+      color: rgba(255,255,250,.86);
+    }}
+    .fit-ov-blue-dot {{
+      display: inline-block;
+      width: calc(7px * var(--u));
+      height: calc(7px * var(--u));
+      margin-left: calc(6px * var(--u));
+      border-radius: 999px;
+      background: #8fc6ff;
+      box-shadow: 0 0 calc(8px * var(--u)) #8fc6ff;
+      vertical-align: middle;
+    }}
+    .fit-ov-bubble {{
+      display: grid;
+      grid-template-columns: calc(66px * var(--u)) 1fr;
+      gap: calc(15px * var(--u));
+      align-items: center;
+      margin-top: calc(31px * var(--u));
+    }}
+    .fit-ov-mascot {{
+      width: calc(62px * var(--u));
+      height: calc(62px * var(--u));
+      border-radius: calc(18px * var(--u));
+      display: grid;
+      place-items: center;
+      background: radial-gradient(circle at 35% 25%, #bbb3ff, #725fe5 62%, #5647bf);
+      color: #fff;
+      font-size: calc(20px * var(--u));
+      font-weight: 900;
+      box-shadow: 0 calc(8px * var(--u)) calc(22px * var(--u)) rgba(70,56,172,.28);
+    }}
+    .fit-ov-coach-copy {{
+      min-height: calc(86px * var(--u));
+      padding: calc(19px * var(--u)) calc(18px * var(--u));
+      border-radius: calc(14px * var(--u));
+      background: rgba(255,255,255,.065);
+    }}
+    .fit-ov-coach-copy strong {{
+      display: block;
+      margin-bottom: calc(8px * var(--u));
+      color: #ffd15b;
+      font-size: calc(18px * var(--u));
+      font-weight: 780;
+    }}
+    .fit-ov-coach-copy span {{
+      display: block;
+      color: rgba(255,255,250,.91);
+      font-size: calc(17px * var(--u));
+      line-height: 1.28;
+      font-weight: 470;
+    }}
+    .fit-ov-section {{
+      margin-top: calc(21px * var(--u));
+      padding-top: calc(24px * var(--u));
+      border-top: 1px solid rgba(255,255,255,.12);
+      font-size: calc(17px * var(--u));
+      font-weight: 650;
+    }}
+    .fit-ov-section h3 {{
+      margin: 0 0 calc(32px * var(--u));
+      font-size: calc(17px * var(--u));
+      font-weight: 720;
+      color: rgba(255,255,250,.86);
+    }}
+    .fit-ov-feel-row {{
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: calc(12px * var(--u));
+      align-items: center;
+      margin-top: calc(21px * var(--u));
+      color: rgba(255,255,250,.90);
+    }}
+    .fit-ov-segments {{
+      grid-column: 1 / 2;
+      display: flex;
+      gap: calc(5px * var(--u));
+    }}
+    .fit-ov-segments i {{
+      width: calc(21px * var(--u));
+      height: calc(10px * var(--u));
+      border-radius: 999px;
+      background: rgba(255,255,255,.12);
+    }}
+    .fit-ov-segments i.on.amber {{ background: linear-gradient(90deg, #ffe05e, #ffab4d); }}
+    .fit-ov-segments i.on.green {{ background: #9ce96a; }}
+    .fit-ov-feel-level {{
+      font-size: calc(16px * var(--u));
+      font-weight: 680;
+      color: rgba(255,255,250,.90);
+    }}
+    .fit-ov-muscle {{
+      display: grid;
+      grid-template-columns: calc(150px * var(--u)) 1fr;
+      gap: calc(14px * var(--u));
+      align-items: center;
+      min-height: calc(185px * var(--u));
+    }}
+    .fit-ov-body {{
+      position: relative;
+      width: calc(138px * var(--u));
+      height: calc(188px * var(--u));
+    }}
+    .fit-ov-body img {{
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      filter: invert(1) contrast(1.28) brightness(1.2) drop-shadow(0 0 calc(8px * var(--u)) rgba(255,255,255,.14));
+      mix-blend-mode: screen;
+      position: relative;
+      z-index: 2;
+    }}
+    .fit-ov-hotspot {{
+      position: absolute;
+      left: calc(var(--x) * 1%);
+      top: calc(var(--y) * 1%);
+      width: calc(var(--sw) * 1%);
+      height: calc(var(--sh) * 1%);
+      transform: translate(-50%, -50%) rotate(calc(var(--rot) * 1deg));
+      border-radius: 999px;
+      background: radial-gradient(circle, rgba(255,175,70,.95) 0 44%, rgba(255,175,70,.36) 64%, rgba(255,175,70,0) 78%);
+      filter: blur(calc(.35px * var(--u)));
+      opacity: .92;
+      z-index: 1;
+    }}
+    .fit-ov-hotspot.strong {{
+      background: radial-gradient(circle, rgba(156,233,106,.95) 0 42%, rgba(156,233,106,.32) 65%, rgba(156,233,106,0) 78%);
+    }}
+    .fit-ov-legend {{
+      display: grid;
+      gap: calc(14px * var(--u));
+      font-size: calc(14px * var(--u));
+      font-weight: 560;
+      color: rgba(255,255,250,.86);
+    }}
+    .fit-ov-legend i {{
+      display: inline-block;
+      width: calc(10px * var(--u));
+      height: calc(10px * var(--u));
+      margin-right: calc(9px * var(--u));
+      border-radius: 999px;
+      vertical-align: middle;
+    }}
+    .fit-ov-bottom {{
+      position: absolute;
+      left: 1.6%;
+      right: 2.35%;
+      bottom: 2.35%;
+      height: 10.35%;
+      min-height: 62px;
+      border-radius: calc(17px * var(--u));
+      background: rgba(67,67,67,.42);
+      border: 1px solid rgba(255,255,255,.13);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 calc(16px * var(--u)) calc(38px * var(--u)) rgba(0,0,0,.16);
+      backdrop-filter: blur(calc(16px * var(--u))) saturate(112%);
+      -webkit-backdrop-filter: blur(calc(16px * var(--u))) saturate(112%);
+      display: grid;
+      grid-template-columns: 18% 1fr 18% 1fr 25.5%;
+      align-items: center;
+      gap: calc(18px * var(--u));
+      padding: 0 calc(31px * var(--u));
+      pointer-events: auto;
+    }}
+    .fit-ov-btn {{
+      height: calc(66px * var(--u));
+      min-height: 42px;
+      border: 0;
+      border-radius: 999px;
+      background: rgba(255,255,255,.065);
+      color: rgba(255,255,250,.95);
+      font-size: calc(24px * var(--u));
+      font-weight: 780;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: calc(12px * var(--u));
+      cursor: pointer;
+      white-space: nowrap;
+      text-shadow: 0 calc(1px * var(--u)) calc(8px * var(--u)) rgba(0,0,0,.30);
+    }}
+    .fit-ov-btn svg {{
+      width: calc(25px * var(--u));
+      height: calc(25px * var(--u));
+      stroke-width: 3.2;
+    }}
+    .fit-ov-btn.pause {{
+      width: calc(198px * var(--u));
+      justify-self: center;
+      background: rgba(255,255,255,.06);
+    }}
+    .fit-ov-pause-circle {{
+      width: calc(46px * var(--u));
+      height: calc(46px * var(--u));
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.28);
+      display: grid;
+      place-items: center;
+    }}
+    .fit-ov-btn.primary {{
+      height: calc(66px * var(--u));
+      background: linear-gradient(100deg, #6f8cff 0%, #8d63ff 58%, #9a58e8 100%);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.22), 0 calc(12px * var(--u)) calc(24px * var(--u)) rgba(88,92,226,.22);
+    }}
+    .fit-ov-count {{
+      text-align: center;
+      font-size: calc(23px * var(--u));
+      font-weight: 650;
+      color: rgba(255,255,250,.78);
+      white-space: nowrap;
+      text-shadow: 0 calc(1px * var(--u)) calc(8px * var(--u)) rgba(0,0,0,.28);
+    }}
+    .fit-ov-count b {{
+      margin-left: calc(8px * var(--u));
+      color: rgba(255,255,250,.98);
+      font-size: calc(28px * var(--u));
+      font-weight: 790;
+    }}
+    .fit-ov-hidden {{ display: none !important; }}
+    @media (max-width: 820px) {{
+      .fit-ov-root {{ --u: calc(var(--fit-scale, .7) * .95); }}
+      .fit-ov-tutorial {{ width: 27%; height: 20%; }}
+      .fit-ov-progress {{ width: 25%; }}
+      .fit-ov-coach {{ width: 27%; right: 2.4%; }}
+      .fit-ov-bottom {{ grid-template-columns: 1fr 1fr 1fr; }}
+      .fit-ov-bottom .fit-ov-count:nth-of-type(2), .fit-ov-bottom .fit-ov-btn.primary {{ display: none; }}
+    }}
+  `;
+
+  const ensureStyle = () => {{
+    let style = doc.getElementById("fit-course-overlay-style");
+    if (!style) {{
+      style = doc.createElement("style");
+      style.id = "fit-course-overlay-style";
+      doc.head.appendChild(style);
+    }}
+    if (style.textContent !== css) style.textContent = css;
+  }};
+
+  const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({{
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  }}[ch]));
+  const icon = {{
+    back: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M15 18 9 12l6-6"/></svg>`,
+    bulb: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M8.2 14.6A6 6 0 1 1 15.8 14c-.7.6-.8 1.2-.8 2H9c0-.8-.1-1.3-.8-1.4Z"/></svg>`,
+    play: `<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>`,
+    expand: `<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/></svg>`,
+    prev: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M19 20 9 12l10-8"/><path d="M5 19V5"/></svg>`,
+    check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m5 12 4 4L19 6"/></svg>`,
+    pause: `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="7" y="5" width="4" height="14" rx="1.5"/><rect x="13" y="5" width="4" height="14" rx="1.5"/></svg>`
+  }};
+  const segmentHtml = (count, total, color) => Array.from({{ length: total }}, (_, i) => `<i class="${{i < count ? `on ${{color}}` : ""}}"></i>`).join("");
+  const setAction = (action) => `root.__fitOverlayAction("${{action}}")`;
+  const muscleMap = {{
+    shoulders: [
+      [28, 26, 20, 12, -16, "medium"],
+      [72, 26, 20, 12, 16, "medium"],
+    ],
+    chest: [
+      [41, 34, 20, 13, -6, "strong"],
+      [59, 34, 20, 13, 6, "strong"],
+    ],
+    biceps: [
+      [24, 40, 14, 24, 15, "medium"],
+      [76, 40, 14, 24, -15, "medium"],
+    ],
+    triceps: [
+      [22, 39, 12, 22, 20, "medium"],
+      [78, 39, 12, 22, -20, "medium"],
+    ],
+    forearms: [
+      [17, 54, 12, 25, 10, "medium"],
+      [83, 54, 12, 25, -10, "medium"],
+    ],
+    core: [
+      [50, 48, 24, 24, 0, "strong"],
+    ],
+    glutes: [
+      [42, 60, 18, 12, -12, "medium"],
+      [58, 60, 18, 12, 12, "medium"],
+    ],
+    quads: [
+      [42, 72, 15, 31, 4, "strong"],
+      [58, 72, 15, 31, -4, "strong"],
+    ],
+  }};
+  const muscleFigure = (d) => {{
+    const active = Array.isArray(d.activeMuscles) ? d.activeMuscles : [];
+    const spots = active.flatMap((name) => muscleMap[name] || []);
+    const spotHtml = spots.map(([x, y, sw, sh, rot, level]) =>
+      `<span class="fit-ov-hotspot ${{level === "strong" ? "strong" : ""}}" style="--x:${{x}};--y:${{y}};--sw:${{sw}};--sh:${{sh}};--rot:${{rot}}"></span>`
+    ).join("");
+    const image = d.muscleImage
+      ? `<img src="${{d.muscleImage}}" alt="肌肉激活图">`
+      : `<svg viewBox="0 0 140 190" fill="none"><g stroke="rgba(255,255,255,.68)" stroke-width="1.4"><path d="M70 18c13 0 21 9 21 22 0 15-8 22-21 22s-21-7-21-22c0-13 8-22 21-22Z"/><path d="M48 72c11-8 33-8 44 0M52 75l-14 37-11 39M88 75l14 37 11 39M61 83l-5 74M79 83l5 74M48 157l-15 23M92 157l15 23M55 80c-10 15-18 29-28 39M85 80c10 15 18 29 28 39"/></g></svg>`;
+    return `${{spotHtml}}${{image}}`;
+  }};
+  const render = (d) => `
+    <div class="fit-ov-root">
+      <div class="fit-ov-header">
+        <button class="fit-ov-back" onclick='${{setAction("previous")}}'>${{icon.back}}</button>
+        <div class="fit-ov-divider"></div>
+        <div class="fit-ov-title">
+          <h2>${{escapeHtml(d.title)}}<span class="fit-ov-info">i</span></h2>
+          <p>${{escapeHtml(d.subtitle)}}</p>
+        </div>
+      </div>
+      <div class="fit-ov-pill">${{icon.bulb}}<span>动作要点</span></div>
+      <div class="fit-ov-card fit-ov-tutorial">
+        ${{d.tutorialUrl ? `<video src="${{escapeHtml(d.tutorialUrl)}}" playsinline></video>` : `<div class="fit-ov-video-bg"></div>`}}
+        <div class="fit-ov-video-title">教学视频</div>
+        <div class="fit-ov-play">${{icon.play}}</div>
+        <div class="fit-ov-time">00:18 / 00:45</div>
+        <div class="fit-ov-expand">${{icon.expand}}</div>
+      </div>
+      <div class="fit-ov-card fit-ov-progress">
+        <div class="fit-ov-progress-title">动作完成度</div>
+        <div class="fit-ov-ring" style="--p:${{Number(d.completion) || 0}}"><span>${{Number(d.completion) || 0}}<small>%</small></span></div>
+        ${{[
+          [d.metricA, d.formScore],
+          [d.metricB, d.stability],
+          [d.metricC, d.symmetry]
+        ].map(([label, value]) => `<div class="fit-ov-meter"><span>${{escapeHtml(label)}}</span><b>${{Number(value) || 0}}%</b><div class="fit-ov-bar" style="--v:${{Number(value) || 0}}"><i></i></div></div>`).join("")}}
+      </div>
+      <div class="fit-ov-card fit-ov-coach">
+        <h3 class="fit-ov-coach-title">AI正在观察<span class="fit-ov-blue-dot"></span></h3>
+        <div class="fit-ov-bubble">
+          <div class="fit-ov-mascot">AI</div>
+          <div class="fit-ov-coach-copy"><strong>${{escapeHtml(d.coachTitle)}}</strong><span>${{escapeHtml(d.coachText)}}</span></div>
+        </div>
+        <div class="fit-ov-section">
+          <h3>身体感受</h3>
+          <div class="fit-ov-feel-row"><span>肩颈紧张度</span><span class="fit-ov-feel-level">${{d.stability >= 80 ? "良好" : "中等"}}</span><div class="fit-ov-segments">${{segmentHtml(Math.round((Number(d.stability) || 0) / 12.5), 8, "amber")}}</div></div>
+          <div class="fit-ov-feel-row"><span>左右对称性</span><span class="fit-ov-feel-level">${{d.symmetry >= 85 ? "良好" : "中等"}}</span><div class="fit-ov-segments">${{segmentHtml(Math.round((Number(d.symmetry) || 0) / 12.5), 8, "green")}}</div></div>
+        </div>
+        <div class="fit-ov-section">
+          <h3>肌肉激活</h3>
+          <div class="fit-ov-muscle">
+            <div class="fit-ov-body">${{muscleFigure(d)}}</div>
+            <div class="fit-ov-legend">
+              <span><i style="background:#9ce96a"></i>激活良好</span>
+              <span><i style="background:#ffad4e"></i>激活中等</span>
+              <span><i style="background:#9ebdff"></i>激活较弱</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="fit-ov-bottom">
+        <button class="fit-ov-btn" onclick='${{setAction("previous")}}'>${{icon.prev}}<span>上一个</span></button>
+        <div class="fit-ov-count">进度 <b>${{Math.min(5, Number(d.valid) || 0)}} / 5</b></div>
+        <button class="fit-ov-btn pause" onclick='${{setAction("pause")}}'><span class="fit-ov-pause-circle">${{icon.pause}}</span><span>${{escapeHtml(d.pauseLabel)}}</span></button>
+        <div class="fit-ov-count">${{d.status === "active" ? `剩余 <b>${{Number(d.remaining) || 0}}s</b>` : d.grade !== "N/A" ? `${{escapeHtml(d.grade)}}级 <b>${{Number(d.points) || 0}}</b>` : ""}}</div>
+        <button class="fit-ov-btn primary" onclick='${{setAction(d.primaryAction)}}'>${{icon.check}}<span>${{escapeHtml(d.primaryLabel)}}</span></button>
+      </div>
+    </div>
+  `;
+
+  const findTargetFrame = () => {{
+    const frames = Array.from(doc.querySelectorAll("iframe"));
+    return frames
+      .map((frame) => [frame, frame.getBoundingClientRect()])
+      .filter(([frame, rect]) => rect.width > 520 && rect.height > 180 && !frame.srcdoc)
+      .sort((a, b) => (b[1].width * b[1].height) - (a[1].width * a[1].height))[0];
+  }};
+
+  const syncOverlay = () => {{
+    ensureStyle();
+    let overlay = doc.getElementById("fit-course-overlay");
+    if (!overlay) {{
+      overlay = doc.createElement("div");
+      overlay.id = "fit-course-overlay";
+    }}
+    const target = findTargetFrame();
+    if (!target) {{
+      overlay.classList.add("fit-ov-hidden");
+      return;
+    }}
+    const [frame, rect] = target;
+    const host = frame.parentElement || frame;
+    if (root.getComputedStyle(host).position === "static") host.style.position = "relative";
+    host.style.overflow = "visible";
+    if (overlay.parentElement !== host) host.appendChild(overlay);
+    const hostRect = host.getBoundingClientRect();
+    const videoHeight = rect.height;
+    const scale = Math.max(0.42, Math.min(1.2, Math.min(rect.width / 1536, videoHeight / 1024)));
+    const nextData = root.__fitOverlayData || data;
+    const nextKey = JSON.stringify(nextData);
+    if (overlay.dataset.fitKey !== nextKey) {{
+      overlay.innerHTML = render(nextData);
+      overlay.dataset.fitKey = nextKey;
+    }}
+    overlay.classList.remove("fit-ov-hidden");
+    overlay.style.left = `${{rect.left - hostRect.left}}px`;
+    overlay.style.top = `${{rect.top - hostRect.top}}px`;
+    overlay.style.width = `${{rect.width}}px`;
+    overlay.style.height = `${{videoHeight}}px`;
+    overlay.style.setProperty("--w", `${{rect.width}}px`);
+    overlay.style.setProperty("--h", `${{videoHeight}}px`);
+    overlay.style.setProperty("--fit-scale", String(scale));
+  }};
+
+  syncOverlay();
+  startHudPolling();
+  if (!root.__fitOverlayRaf) {{
+    let last = 0;
+    const loop = (now) => {{
+      if (now - last > 80) {{
+        last = now;
+        try {{ syncOverlay(); }} catch (_) {{}}
+      }}
+      root.__fitOverlayRaf = root.requestAnimationFrame(loop);
+    }};
+    root.__fitOverlayRaf = root.requestAnimationFrame(loop);
+    root.addEventListener("resize", syncOverlay);
+    root.addEventListener("scroll", syncOverlay, true);
+  }}
+}})();
+</script>
+        """,
+        height=1,
+    )
+
+
 def render_sidebar():
     st.sidebar.title("🏋️ AI Fitness Coach")
     exercise = st.sidebar.selectbox("选择动作", list(EXERCISES.keys()), key="exercise_choice")
@@ -1125,6 +2470,7 @@ def render_pet_preview():
 
 def main():
     apply_theme()
+    ensure_hud_server()
     st.markdown(
         """
 <div class="fit-hero">
@@ -1200,7 +2546,9 @@ def main():
     if overlay_token:
         mark_overlay_action_handled(overlay_token)
 
-    install_course_overlay(build_overlay_data(exercise, ctx, duration_seconds))
+    initial_overlay_data = build_overlay_data(exercise, ctx, duration_seconds)
+    publish_hud_data(initial_overlay_data)
+    install_course_overlay(initial_overlay_data)
 
     render_pet_preview()
     render_training_calendar()
