@@ -1,0 +1,6 @@
+{
+  "name": "小摩放松",
+  "description": "提供轻量身体不适觉察、代偿动作原因理解、AI实时姿态关节纠错与绒绒团团能量成长，帮你温柔地放松代偿肌肉、激活核心与深层肌肉稳定。",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
