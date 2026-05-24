@@ -300,6 +300,15 @@ function Tuantuan() {
   );
 }
 
+function getTimeGreeting(date = new Date()) {
+  const hour = date.getHours();
+  if (hour >= 5 && hour < 9) return "早上好";
+  if (hour >= 9 && hour < 12) return "上午好";
+  if (hour >= 12 && hour < 14) return "中午好";
+  if (hour >= 14 && hour < 18) return "下午好";
+  return "晚上好";
+}
+
 type PetMood = "tired" | "early" | "recovering" | "light" | "clear" | "free";
 
 const petMoods: PetMood[] = ["tired", "early", "recovering", "light", "clear", "free"];
@@ -504,12 +513,14 @@ function MiniChart() {
 }
 
 function HomePage({ go }: { go: (page: PageId) => void }) {
+  const greeting = getTimeGreeting();
+
   return (
     <div className="page home-grid">
       <section className="hero-panel">
         <div className="hero-copy-block">
           <p className="eyebrow">Daily Light Move</p>
-          <h1>晚上好，蜗蜗</h1>
+          <h1>{greeting}，蜗蜗</h1>
           <p>今天先照顾一下身体吧</p>
         </div>
         <div className="hero-companion">
@@ -1183,9 +1194,6 @@ function IntegratedObservationPage({
                 playsInline
                 preload="auto"
               />
-              <span className="teaching-play-mark" aria-hidden="true">
-                <Play size={34} />
-              </span>
             </div>
             <div className="teaching-video-meta">
               <span>循环示范</span>

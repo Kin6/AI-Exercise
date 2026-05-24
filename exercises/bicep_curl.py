@@ -61,10 +61,10 @@ class BicepCurlAnalyzer:
         max_elbow_drift = upper_arm_len * self.quality.get("max_elbow_drift_ratio", 0.18)
         max_shoulder_drift = upper_arm_len * self.quality.get("max_shoulder_drift_ratio", 0.14)
 
-        if self.last_elbow_x is not None and abs(elbow_x - self.last_elbow_x) > 45:
+        if self.last_elbow_x is not None and abs(elbow_x - self.last_elbow_x) > 65:
             live_errors.append("肘部晃动")
             self._add_error("肘部晃动")
-        if self.last_shoulder_x is not None and abs(shoulder_x - self.last_shoulder_x) > 35:
+        if self.last_shoulder_x is not None and abs(shoulder_x - self.last_shoulder_x) > 55:
             live_errors.append("借力摆动")
             self._add_error("借力摆动")
 
