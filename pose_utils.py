@@ -20,6 +20,12 @@ Point = Tuple[float, float]
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
+GOLD_LINE_GLOW = (58, 176, 255)
+GOLD_LINE_CORE = (202, 238, 255)
+GOLD_JOINT_GLOW = (42, 172, 255)
+GOLD_JOINT_CORE = (216, 246, 255)
+GOLD_JOINT_HOT = (255, 255, 255)
+
 
 LANDMARK_NAMES = {
     "left_shoulder": mp_pose.PoseLandmark.LEFT_SHOULDER.value,
@@ -165,8 +171,56 @@ class PoseDetector:
         return PoseResult(landmarks=landmarks, annotated_frame=annotated, detected=detected)
 
 
-def _draw_colored_pose(frame: np.ndarray, landmarks: Dict[str, Tuple[float, float, float]]) -> None:
+def _draw_glow_line(
+    frame: np.ndarray,
+    p1: Tuple[int, int],
+    p2: Tuple[int, int],
+    glow_color: Tuple[int, int, int],
+    core_color: Tuple[int, int, int],
+    glow_thickness: int = 4,
+    core_thickness: int = 1,
+) -> None:
     glow = frame.copy()
+    cv2.line(glow, p1, p2, glow_color, glow_thickness, cv2.LINE_AA)
+    cv2.addWeighted(glow, 0.18, frame, 0.82, 0, frame)
+    cv2.line(frame, p1, p2, core_color, core_thickness, cv2.LINE_AA)
+
+
+def _draw_star_joint(
+    frame: np.ndarray,
+    center: Tuple[int, int],
+    glow_color: Tuple[int, int, int],
+    core_color: Tuple[int, int, int],
+    radius: int = 3,
+) -> None:
+    halo = frame.copy()
+    cv2.circle(halo, center, radius + 4, glow_color, -1, cv2.LINE_AA)
+    cv2.addWeighted(halo, 0.12, frame, 0.88, 0, frame)
+
+    x, y = center
+    long_ray = radius + 4
+    ray_glow = frame.copy()
+    cv2.line(ray_glow, (x - long_ray, y), (x + long_ray, y), glow_color, 1, cv2.LINE_AA)
+    cv2.line(ray_glow, (x, y - long_ray), (x, y + long_ray), glow_color, 1, cv2.LINE_AA)
+    cv2.addWeighted(ray_glow, 0.18, frame, 0.82, 0, frame)
+
+    cv2.line(frame, (x - long_ray, y), (x + long_ray, y), core_color, 1, cv2.LINE_AA)
+    cv2.line(frame, (x, y - long_ray), (x, y + long_ray), core_color, 1, cv2.LINE_AA)
+    diamond = np.array(
+        [
+            (x, y - radius),
+            (x + radius, y),
+            (x, y + radius),
+            (x - radius, y),
+        ],
+        dtype=np.int32,
+    )
+    cv2.fillConvexPoly(frame, diamond, GOLD_JOINT_HOT, cv2.LINE_AA)
+    cv2.polylines(frame, [diamond], True, core_color, 1, cv2.LINE_AA)
+    cv2.circle(frame, center, 1, core_color, -1, cv2.LINE_AA)
+
+
+def _draw_colored_pose(frame: np.ndarray, landmarks: Dict[str, Tuple[float, float, float]]) -> None:
     for group, (start_key, end_key) in POSE_SEGMENTS:
         start = landmarks.get(start_key)
         end = landmarks.get(end_key)
@@ -174,28 +228,13 @@ def _draw_colored_pose(frame: np.ndarray, landmarks: Dict[str, Tuple[float, floa
             continue
         p1 = (int(start[0]), int(start[1]))
         p2 = (int(end[0]), int(end[1]))
-        cv2.line(glow, p1, p2, (214, 244, 172), 6, cv2.LINE_AA)
-        cv2.line(frame, p1, p2, (242, 246, 238), 2, cv2.LINE_AA)
-    cv2.addWeighted(glow, 0.16, frame, 0.84, 0, frame)
+        _draw_glow_line(frame, p1, p2, GOLD_LINE_GLOW, GOLD_LINE_CORE)
 
     for key, point in landmarks.items():
         if point[2] < 0.42:
             continue
         center = (int(point[0]), int(point[1]))
-        if "shoulder" in key:
-            color = (236, 242, 222)
-            glow_color = (120, 216, 126)
-        elif key in {"left_hip", "right_hip"}:
-            color = (185, 230, 170)
-            glow_color = (126, 205, 122)
-        else:
-            color = (214, 244, 172)
-            glow_color = (130, 206, 122)
-        halo = frame.copy()
-        cv2.circle(halo, center, 10, glow_color, -1, cv2.LINE_AA)
-        cv2.addWeighted(halo, 0.22, frame, 0.78, 0, frame)
-        cv2.circle(frame, center, 5, (246, 248, 241), -1, cv2.LINE_AA)
-        cv2.circle(frame, center, 3, color, -1, cv2.LINE_AA)
+        _draw_star_joint(frame, center, GOLD_JOINT_GLOW, GOLD_JOINT_CORE)
 
 
 def draw_exercise_joint_highlights(
@@ -212,11 +251,7 @@ def draw_exercise_joint_highlights(
         if not point or point[2] < 0.42:
             continue
         center = (int(point[0]), int(point[1]))
-        halo = out.copy()
-        cv2.circle(halo, center, 9, (70, 154, 255), -1, cv2.LINE_AA)
-        cv2.addWeighted(halo, 0.25, out, 0.75, 0, out)
-        cv2.circle(out, center, 5, (78, 170, 255), 2, cv2.LINE_AA)
-        cv2.circle(out, center, 2, (250, 245, 230), -1, cv2.LINE_AA)
+        _draw_star_joint(out, center, GOLD_JOINT_GLOW, GOLD_JOINT_CORE, radius=3)
     return out
 
 

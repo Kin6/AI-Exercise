@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Bell,
@@ -11,6 +11,8 @@ import {
   HeartPulse,
   Home,
   LineChart,
+  Mic,
+  MicOff,
   MessageCircle,
   Pause,
   Play,
@@ -79,6 +81,37 @@ type CoachExercise = {
   teachingLabel: string;
 };
 
+type SpeechRecognitionResultLike = {
+  isFinal: boolean;
+  length: number;
+  [index: number]: { transcript: string } | undefined;
+};
+
+type SpeechRecognitionLike = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onstart: (() => void) | null;
+  onend: (() => void) | null;
+  onerror: ((event: { error?: string }) => void) | null;
+  onresult: ((event: { resultIndex?: number; results: ArrayLike<SpeechRecognitionResultLike> }) => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+};
+
+type SpeechRecognitionConstructorLike = new () => SpeechRecognitionLike;
+
+type VoiceDebugEntry = {
+  id: string;
+  text: string;
+  time: string;
+  hasIntent: boolean;
+  matchedActions: string[];
+  status: string;
+};
+
 const poseApiBase =
   ((import.meta as unknown as { env?: Record<string, string> }).env?.VITE_POSE_API_URL || "http://127.0.0.1:8001").replace(
     /\/$/,
@@ -114,6 +147,174 @@ const coachExercises: CoachExercise[] = [
 
 const getTeachingVideoSrc = (fileName: string) => `/videoTeaching/${encodeURIComponent(fileName)}`;
 const trainingDurationSeconds = 30;
+
+const exerciseVoiceAliases: Record<ExerciseKey, string[]> = {
+  squat: ["深蹲", "下蹲", "蹲起", "squat"],
+  pushup: ["俯卧撑", "俯卧", "pushup", "pushups", "push-up", "push-ups"],
+  curl: ["弯举", "哑铃弯举", "手臂弯举", "二头弯举", "玩具", "玩举", "弯具", "完具", "万举", "wanju", "wan ju", "bicep curl", "curl"],
+};
+
+const bodyPartExerciseAliases: Record<ExerciseKey, string[]> = {
+  squat: [
+    "下肢",
+    "腿",
+    "腿部",
+    "大腿",
+    "小腿",
+    "股四头肌",
+    "腘绳肌",
+    "臀",
+    "臀部",
+    "屁股",
+    "髋",
+    "髋部",
+    "髋关节",
+    "膝",
+    "膝盖",
+    "膝关节",
+    "脚踝",
+    "踝",
+    "踝关节",
+    "脚",
+    "脚掌",
+    "足",
+    "足部",
+  ],
+  pushup: [
+    "上肢",
+    "胸",
+    "胸部",
+    "胸肌",
+    "肩",
+    "肩膀",
+    "肩部",
+    "肩关节",
+    "背",
+    "背部",
+    "上背",
+    "脊柱",
+    "脊背",
+    "腰",
+    "腰背",
+    "腹",
+    "腹部",
+    "腹肌",
+    "核心",
+    "肚子",
+    "躯干",
+    "身体直线",
+    "肱三头肌",
+    "三头肌",
+    "头",
+    "头部",
+    "脸",
+    "面部",
+    "颈",
+    "颈肩",
+    "肩颈",
+    "脖子",
+    "颈部",
+  ],
+  curl: [
+    "手臂",
+    "胳膊",
+    "臂",
+    "上臂",
+    "前臂",
+    "二头",
+    "二头肌",
+    "肱二头肌",
+    "肱肌",
+    "肘",
+    "肘部",
+    "肘关节",
+    "手腕",
+    "腕",
+    "腕部",
+    "腕关节",
+    "手",
+    "手部",
+    "手掌",
+    "手指",
+  ],
+};
+
+const workoutIntentKeywords = [
+  "想练",
+  "想做",
+  "想锻炼",
+  "想训练",
+  "想要练",
+  "想要做",
+  "想要锻炼",
+  "我要练",
+  "我要做",
+  "我要锻炼",
+  "我要训练",
+  "要练",
+  "要做",
+  "开始",
+  "切换",
+  "换成",
+  "练一下",
+  "做一下",
+  "来一组",
+  "训练",
+  "锻炼",
+];
+
+function getBrowserSpeechRecognition() {
+  const speechWindow = window as Window & {
+    SpeechRecognition?: SpeechRecognitionConstructorLike;
+    webkitSpeechRecognition?: SpeechRecognitionConstructorLike;
+  };
+  return speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition || null;
+}
+
+function normalizeVoiceText(text: string) {
+  return text
+    .toLowerCase()
+    .replace(/[，。！？；：、,.!?;:'"“”‘’（）()\[\]{}<>《》\s-]/g, "")
+    .trim();
+}
+
+function hasWorkoutIntent(text: string) {
+  const normalized = normalizeVoiceText(text);
+  return workoutIntentKeywords.some((keyword) => normalized.includes(normalizeVoiceText(keyword)));
+}
+
+function analyzeVoiceCommand(text: string) {
+  const hasIntent = hasWorkoutIntent(text);
+  const normalized = normalizeVoiceText(text);
+  const matchedKeys = new Set<ExerciseKey>();
+  coachExercises.forEach((exercise) => {
+    const directMatch = exerciseVoiceAliases[exercise.key].some((alias) => normalized.includes(normalizeVoiceText(alias)));
+    const bodyPartMatch = bodyPartExerciseAliases[exercise.key].some((alias) => normalized.includes(normalizeVoiceText(alias)));
+    if (directMatch || bodyPartMatch) matchedKeys.add(exercise.key);
+  });
+  const matchedExercises = coachExercises.filter((exercise) => matchedKeys.has(exercise.key));
+  return {
+    hasIntent,
+    matchedExercises,
+    commandExercise: hasIntent ? matchedExercises[0] || null : null,
+  };
+}
+
+function readRecognitionTranscript(event: { resultIndex?: number; results: ArrayLike<SpeechRecognitionResultLike> }) {
+  let finalTranscript = "";
+  let interimTranscript = "";
+  const startIndex = event.resultIndex ?? 0;
+
+  for (let index = startIndex; index < event.results.length; index += 1) {
+    const result = event.results[index];
+    const transcript = result?.[0]?.transcript?.trim() || "";
+    if (!transcript) continue;
+    if (result.isFinal) finalTranscript += transcript;
+    else interimTranscript += transcript;
+  }
+
+  return finalTranscript || interimTranscript;
+}
 
 const correctionSpeechKeywords = [
   "请",
@@ -217,20 +418,6 @@ function pickChineseVoice(voices: SpeechSynthesisVoice[]) {
     null
   );
 }
-
-const flow: PageId[] = [
-  "home",
-  "awareness",
-  "understanding",
-  "muscles",
-  "plan",
-  "training",
-  "observation",
-  "feedback",
-  "archive",
-  "explore",
-  "coach",
-];
 
 const pageMeta: Record<PageId, { index: string; title: string; hint: string }> = {
   home: { index: "01", title: "首页 | 今日状态入口", hint: "从一点点身体觉察开始" },
@@ -827,20 +1014,28 @@ function ObservationPage({ go }: { go: (page: PageId) => void }) {
 function IntegratedObservationPage({
   go,
   exercise,
+  sessionNonce,
   onPreviousExercise,
   onRoundComplete,
+  onVoiceExerciseDetected,
 }: {
   go: (page: PageId) => void;
   exercise: CoachExercise;
+  sessionNonce: number;
   onPreviousExercise: () => void;
   onRoundComplete: () => void;
+  onVoiceExerciseDetected: (exercise: CoachExercise) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const captureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const autoAdvanceRef = useRef(false);
   const speechVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const shouldRestartRecognitionRef = useRef(false);
+  const recognitionRestartTimerRef = useRef<number | undefined>();
   const lastSpokenCorrectionRef = useRef({ text: "", at: 0 });
+  const lastVoiceCommandRef = useRef<{ key: ExerciseKey | ""; at: number }>({ key: "", at: 0 });
   const [sessionId, setSessionId] = useState<string>("");
   const [session, setSession] = useState<PoseSessionState>({});
   const [apiState, setApiState] = useState<"connecting" | "ready" | "offline">("connecting");
@@ -851,12 +1046,18 @@ function IntegratedObservationPage({
   const [showRoundFinish, setShowRoundFinish] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [speechSupported, setSpeechSupported] = useState(false);
+  const [voiceListening, setVoiceListening] = useState(false);
+  const [voiceListenEnabled, setVoiceListenEnabled] = useState(true);
+  const [voiceRecognitionSupported, setVoiceRecognitionSupported] = useState(false);
+  const [voiceCommandText, setVoiceCommandText] = useState("说“训练手臂/胸/腿”或“开始弯举”");
+  const [voiceDebugEntries, setVoiceDebugEntries] = useState<VoiceDebugEntry[]>([]);
 
   const countdownRemainingPercent = clamp((countdownSeconds / trainingDurationSeconds) * 100, 0, 100);
+  const currentScore = Math.round(session.score ?? session.summary?.avg_score ?? 0);
   const bottomMetrics = [
-    ["标准次数", String(session.count ?? 0)],
+    ["得分", `${currentScore}`],
     ["尝试次数", String(session.attempts ?? 0)],
-    ["最近得分", `${session.score ?? 100}`],
+    ["完成次数", String(session.count ?? session.summary?.valid_reps ?? 0)],
     ["识别耗时", session.processMs ? `${session.processMs}ms` : "--"],
   ];
 
@@ -876,6 +1077,19 @@ function IntegratedObservationPage({
   const isRoundFinished = session.status === "finished";
   const panelMessage = isRoundFinished ? buildRoundSummaryMessage(session, exercise) : liveMessage;
   const panelEyebrow = isRoundFinished ? "本组已完成" : "AI 正在观察";
+  const voiceDebugStatus = voiceRecognitionSupported ? (voiceListening ? "监听中" : "未监听") : "不支持";
+  const addVoiceDebugEntry = useCallback((entry: Omit<VoiceDebugEntry, "id" | "time">) => {
+    const now = new Date();
+    const time = now.toLocaleTimeString("zh-CN", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    setVoiceDebugEntries((current) => [
+      {
+        id: `${now.getTime()}-${Math.random().toString(36).slice(2, 7)}`,
+        time,
+        ...entry,
+      },
+      ...current,
+    ].slice(0, 8));
+  }, []);
   const correctionSpeechText = useMemo(() => {
     if (apiState !== "ready" || isPaused || showRoundFinish) return "";
 
@@ -934,7 +1148,7 @@ function IntegratedObservationPage({
           setSession({
             exerciseLabel: exercise.title,
             liveMessage: "没有连上 Python 姿态识别服务，先启动后端 API 就能接入真实评分。",
-            score: 100,
+            score: 0,
             count: 0,
             attempts: 0,
             remaining: trainingDurationSeconds,
@@ -947,7 +1161,7 @@ function IntegratedObservationPage({
     return () => {
       alive = false;
     };
-  }, [exercise]);
+  }, [exercise, sessionNonce]);
 
   useEffect(() => {
     if (!("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") return;
@@ -986,6 +1200,134 @@ function IntegratedObservationPage({
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(utterance);
   }, [correctionSpeechText, speechSupported, voiceEnabled]);
+
+  useEffect(() => {
+    const Recognition = getBrowserSpeechRecognition();
+    if (!Recognition) {
+      setVoiceRecognitionSupported(false);
+      setVoiceListenEnabled(false);
+      setVoiceCommandText("当前浏览器不支持语音识别");
+      return;
+    }
+
+    setVoiceRecognitionSupported(true);
+
+    const recognition = new Recognition();
+    recognitionRef.current = recognition;
+    shouldRestartRecognitionRef.current = voiceListenEnabled;
+    let disposed = false;
+    let starting = false;
+
+    const startRecognition = () => {
+      if (disposed || !shouldRestartRecognitionRef.current || starting) return;
+      try {
+        starting = true;
+        recognition.start();
+      } catch (error) {
+        starting = false;
+      }
+    };
+
+    recognition.lang = "zh-CN";
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.onstart = () => {
+      starting = false;
+      setVoiceListening(true);
+      setVoiceCommandText("正在听训练指令");
+    };
+    recognition.onend = () => {
+      starting = false;
+      setVoiceListening(false);
+      if (disposed || !shouldRestartRecognitionRef.current) return;
+      recognitionRestartTimerRef.current = window.setTimeout(startRecognition, 700);
+    };
+    recognition.onerror = (event) => {
+      starting = false;
+      const error = event.error || "";
+      if (error === "not-allowed" || error === "service-not-allowed") {
+        shouldRestartRecognitionRef.current = false;
+        setVoiceListenEnabled(false);
+        setVoiceCommandText("麦克风未授权，点击语音按钮重试");
+        addVoiceDebugEntry({
+          text: `识别错误：${error}`,
+          hasIntent: false,
+          matchedActions: [],
+          status: "麦克风权限被拒绝",
+        });
+        return;
+      }
+      if (error !== "no-speech") {
+        setVoiceCommandText("语音监听短暂中断，正在重连");
+        addVoiceDebugEntry({
+          text: `识别错误：${error || "unknown"}`,
+          hasIntent: false,
+          matchedActions: [],
+          status: "识别服务中断",
+        });
+      }
+    };
+    recognition.onresult = (event) => {
+      const transcript = readRecognitionTranscript(event);
+      if (!transcript) return;
+
+      const analysis = analyzeVoiceCommand(transcript);
+      const commandExercise = analysis.commandExercise;
+      const matchedActions = analysis.matchedExercises.map((item) => getExerciseShortName(item.title));
+      if (!commandExercise) {
+        const status = analysis.hasIntent
+          ? "缺少动作关键词"
+          : matchedActions.length
+            ? "缺少训练意图"
+            : "未命中口令";
+        addVoiceDebugEntry({
+          text: transcript.trim(),
+          hasIntent: analysis.hasIntent,
+          matchedActions,
+          status,
+        });
+        setVoiceCommandText(`听到：${transcript.trim()}，${status}`);
+        return;
+      }
+
+      const now = Date.now();
+      const lastCommand = lastVoiceCommandRef.current;
+      if (lastCommand.key === commandExercise.key && now - lastCommand.at < 6000) {
+        addVoiceDebugEntry({
+          text: transcript.trim(),
+          hasIntent: analysis.hasIntent,
+          matchedActions,
+          status: "重复口令已忽略",
+        });
+        return;
+      }
+
+      lastVoiceCommandRef.current = { key: commandExercise.key, at: now };
+      addVoiceDebugEntry({
+        text: transcript.trim(),
+        hasIntent: analysis.hasIntent,
+        matchedActions,
+        status: `已触发：${getExerciseShortName(commandExercise.title)}`,
+      });
+      setVoiceCommandText(`听到：${transcript.trim()}，切换到 ${getExerciseShortName(commandExercise.title)}`);
+      onVoiceExerciseDetected(commandExercise);
+    };
+
+    if (voiceListenEnabled) startRecognition();
+
+    return () => {
+      disposed = true;
+      shouldRestartRecognitionRef.current = false;
+      if (recognitionRestartTimerRef.current) window.clearTimeout(recognitionRestartTimerRef.current);
+      recognition.onstart = null;
+      recognition.onend = null;
+      recognition.onerror = null;
+      recognition.onresult = null;
+      recognition.abort();
+      recognitionRef.current = null;
+    };
+  }, [addVoiceDebugEntry, onVoiceExerciseDetected, voiceListenEnabled]);
 
   useEffect(() => {
     if (session.status !== "active") return;
@@ -1128,6 +1470,23 @@ function IntegratedObservationPage({
     });
   };
 
+  const toggleVoiceListening = () => {
+    if (!voiceRecognitionSupported) return;
+    setVoiceListenEnabled((current) => {
+      const next = !current;
+      shouldRestartRecognitionRef.current = next;
+      if (!next) {
+        if (recognitionRestartTimerRef.current) window.clearTimeout(recognitionRestartTimerRef.current);
+        recognitionRef.current?.abort();
+        setVoiceListening(false);
+        setVoiceCommandText("语音监听已暂停");
+      } else {
+        setVoiceCommandText("正在启动语音监听");
+      }
+      return next;
+    });
+  };
+
   useEffect(() => {
     if (countdownSeconds > 0 || autoAdvanceRef.current) return;
 
@@ -1176,6 +1535,20 @@ function IntegratedObservationPage({
               {voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}
               <span>{speechSupported ? (voiceEnabled ? "语音" : "静音") : "无语音"}</span>
             </button>
+            <button
+              type="button"
+              className={`speech-command-toggle ${voiceListening ? "is-listening" : ""}`}
+              onClick={toggleVoiceListening}
+              disabled={!voiceRecognitionSupported}
+              title={
+                voiceRecognitionSupported
+                  ? "监听“我想锻炼深蹲/俯卧撑/弯举”并自动切换动作"
+                  : "当前浏览器不支持语音识别"
+              }
+            >
+              {voiceListening ? <Mic size={17} /> : <MicOff size={17} />}
+              <span>{voiceListenEnabled ? "口令监听" : "未监听"}</span>
+            </button>
             <span>{session.exerciseLabel || exercise.title} · AI 实时观察</span>
           </div>
 
@@ -1222,6 +1595,11 @@ function IntegratedObservationPage({
           <div className={`pose-live-badge ${session.detected ? "detected" : ""}`}>
             <span />
             {session.detected ? "已识别人体彩点" : "等待完整入镜"}
+          </div>
+
+          <div className={`voice-command-chip ${voiceListening ? "is-listening" : ""}`}>
+            {voiceListening ? <Mic size={14} /> : <MicOff size={14} />}
+            <span>{voiceCommandText}</span>
           </div>
 
           {showRoundFinish && (
@@ -1299,6 +1677,37 @@ function IntegratedObservationPage({
         ) : (
           <p className="soft-note">{exercise.note}</p>
         )}
+        <section className="voice-debug-panel" aria-label="语音识别调试">
+          <div className="voice-debug-head">
+            <span>语音识别调试</span>
+            <strong>{voiceDebugStatus}</strong>
+          </div>
+          {voiceDebugEntries.length ? (
+            <div className="voice-debug-list">
+              {voiceDebugEntries.map((entry) => (
+                <article className="voice-debug-item" key={entry.id}>
+                  <div>
+                    <span>{entry.time}</span>
+                    <strong>{entry.status}</strong>
+                  </div>
+                  <p>{entry.text}</p>
+                  <div className="voice-debug-tags">
+                    <span className={entry.hasIntent ? "is-hit" : undefined}>
+                      {entry.hasIntent ? "有训练意图" : "无训练意图"}
+                    </span>
+                    <span className={entry.matchedActions.length ? "is-hit" : undefined}>
+                      {entry.matchedActions.length ? `动作：${entry.matchedActions.join(" / ")}` : "无动作关键词"}
+                    </span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="voice-debug-empty">
+              暂未收到语音文字。请确认浏览器麦克风权限已允许，并先点击或查看“口令监听”为开启状态。
+            </p>
+          )}
+        </section>
         <p className="soft-note">
           后端复用了现有 MediaPipe 与评分规则。这里显示的是 Python 服务实时返回的计数、评分和动作提示。
         </p>
@@ -1433,10 +1842,17 @@ function IntegratedCoachPage({ onStartExercise }: { onStartExercise: (exercise: 
 export default function App() {
   const [page, setPage] = useState<PageId>("home");
   const [selectedExercise, setSelectedExercise] = useState<CoachExercise>(coachExercises[0]);
+  const [voiceSwitchNonce, setVoiceSwitchNonce] = useState(0);
   const meta = pageMeta[page];
 
   useEffect(() => {
     document.title = "每日轻动";
+  }, []);
+
+  const handleVoiceExerciseDetected = useCallback((exercise: CoachExercise) => {
+    setSelectedExercise(exercise);
+    setPage("observation");
+    setVoiceSwitchNonce((current) => current + 1);
   }, []);
 
   const renderPage = () => {
@@ -1451,7 +1867,9 @@ export default function App() {
         <IntegratedObservationPage
           go={setPage}
           exercise={selectedExercise}
+          sessionNonce={voiceSwitchNonce}
           onRoundComplete={() => setPage("feedback")}
+          onVoiceExerciseDetected={handleVoiceExerciseDetected}
           onPreviousExercise={() => {
             setSelectedExercise((current) => {
               const currentIndex = coachExercises.findIndex((exercise) => exercise.key === current.key);

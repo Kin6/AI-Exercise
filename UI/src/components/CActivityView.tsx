@@ -165,9 +165,38 @@ export const CActivityView: React.FC<CActivityViewProps> = ({ onBackToHome }) =>
       const leftShoulder = { x: w / 2 - 35, y: h / 4 + 15 + squatDepth * 30 };
       const rightShoulder = { x: w / 2 + 35, y: h / 4 + 15 + squatDepth * 30 };
 
+      const drawStarJoint = (j: { x: number; y: number }) => {
+        ctx.save();
+        ctx.shadowColor = "rgba(255, 190, 64, 0.72)";
+        ctx.shadowBlur = 8;
+        ctx.strokeStyle = "rgba(255, 246, 216, 0.96)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(j.x - 6, j.y);
+        ctx.lineTo(j.x + 6, j.y);
+        ctx.moveTo(j.x, j.y - 6);
+        ctx.lineTo(j.x, j.y + 6);
+        ctx.stroke();
+        ctx.fillStyle = "#FFF7D6";
+        ctx.beginPath();
+        ctx.moveTo(j.x, j.y - 3);
+        ctx.lineTo(j.x + 3, j.y);
+        ctx.lineTo(j.x, j.y + 3);
+        ctx.lineTo(j.x - 3, j.y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = "#FFD66E";
+        ctx.beginPath();
+        ctx.arc(j.x, j.y, 1, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      };
+
       // Render skeleton linkages
-      ctx.strokeStyle = "rgba(45, 212, 191, 0.85)"; // Cyan tracking lines
-      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(255, 232, 178, 0.84)";
+      ctx.lineWidth = 1;
+      ctx.shadowColor = "rgba(255, 190, 64, 0.52)";
+      ctx.shadowBlur = 9;
 
       // Spine link
       ctx.beginPath();
@@ -199,20 +228,12 @@ export const CActivityView: React.FC<CActivityViewProps> = ({ onBackToHome }) =>
       ctx.lineTo(rightKnee.x, rightKnee.y);
       ctx.lineTo(rightAnkle.x, rightAnkle.y);
       ctx.stroke();
+      ctx.shadowBlur = 0;
 
-      // Marker joint dots
+      // Marker joint glints
       const activeJoints = [spineTop, leftShoulder, rightShoulder, leftHip, rightHip, leftKnee, rightKnee, leftAnkle, rightAnkle];
       activeJoints.forEach((j) => {
-        ctx.fillStyle = "#2DD4BF";
-        ctx.beginPath();
-        ctx.arc(j.x, j.y, 4, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.strokeStyle = "#FFF";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(j.x, j.y, 5, 0, Math.PI * 2);
-        ctx.stroke();
+        drawStarJoint(j);
       });
 
       // Shrug marker circle warnings

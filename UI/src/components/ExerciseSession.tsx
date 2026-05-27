@@ -171,9 +171,38 @@ export const ExerciseSession: React.FC<ExerciseSessionProps> = ({
       const leftElbow = { x: w / 2 - 65, y: h / 2 + 10 + Math.cos(theta) * 4 };
       const rightElbow = { x: w / 2 + 65, y: h / 2 + 22 + wave };
 
+      const drawStarJoint = (j: { x: number; y: number }) => {
+        ctx.save();
+        ctx.shadowColor = "rgba(255, 190, 64, 0.72)";
+        ctx.shadowBlur = 8;
+        ctx.strokeStyle = "rgba(255, 246, 216, 0.96)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(j.x - 6, j.y);
+        ctx.lineTo(j.x + 6, j.y);
+        ctx.moveTo(j.x, j.y - 6);
+        ctx.lineTo(j.x, j.y + 6);
+        ctx.stroke();
+        ctx.fillStyle = "#FFF7D6";
+        ctx.beginPath();
+        ctx.moveTo(j.x, j.y - 3);
+        ctx.lineTo(j.x + 3, j.y);
+        ctx.lineTo(j.x, j.y + 3);
+        ctx.lineTo(j.x - 3, j.y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = "#FFD66E";
+        ctx.beginPath();
+        ctx.arc(j.x, j.y, 1, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      };
+
       // Draw bone joints connecting lines
-      ctx.strokeStyle = "rgba(45, 212, 191, 0.75)"; // Cyan lines
-      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = "rgba(255, 232, 178, 0.84)";
+      ctx.lineWidth = 1;
+      ctx.shadowColor = "rgba(255, 190, 64, 0.52)";
+      ctx.shadowBlur = 9;
 
       // Shoulder line
       ctx.beginPath();
@@ -197,6 +226,7 @@ export const ExerciseSession: React.FC<ExerciseSessionProps> = ({
       ctx.moveTo(nose.x, nose.y + 12);
       ctx.lineTo(nose.x, h / 2 - 11);
       ctx.stroke();
+      ctx.shadowBlur = 0;
 
       // Draw Head Circle overlay
       ctx.fillStyle = "rgba(139, 92, 246, 0.15)";
@@ -207,19 +237,10 @@ export const ExerciseSession: React.FC<ExerciseSessionProps> = ({
       ctx.fill();
       ctx.stroke();
 
-      // Draw individual Joint nodes (cyan dots)
+      // Draw individual joint nodes as small star glints
       const joints = [nose, leftEar, rightEar, leftShoulder, rightShoulder, leftElbow, rightElbow];
       joints.forEach((j) => {
-        ctx.fillStyle = "#2DD4BF";
-        ctx.beginPath();
-        ctx.arc(j.x, j.y, 4, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.strokeStyle = "#FFF";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(j.x, j.y, 5.5, 0, Math.PI * 2);
-        ctx.stroke();
+        drawStarJoint(j);
       });
 
       // Special Right shoulder attention shrugging ring

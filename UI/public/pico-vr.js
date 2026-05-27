@@ -127,7 +127,7 @@ function renderWaiting(message = "等待电脑端训练数据。") {
   elements.liveImage.classList.remove("has-frame");
   elements.validReps.textContent = "0";
   elements.attempts.textContent = "0";
-  elements.score.textContent = "100";
+  elements.score.textContent = "0";
   elements.processMs.textContent = "--";
   elements.stage.textContent = "准备";
   elements.grade.textContent = "训练中";
@@ -146,9 +146,9 @@ function renderSession(session) {
   setStatus("Pose API 已连接", "ready");
   setTeachingVideo(meta);
   elements.exerciseTitle.textContent = meta.title;
-  elements.validReps.textContent = String(session.count ?? session.summary?.valid_reps ?? 0);
+  elements.validReps.textContent = String(Math.round(session.score ?? session.summary?.avg_score ?? 0));
   elements.attempts.textContent = String(session.attempts ?? session.summary?.attempts ?? 0);
-  elements.score.textContent = String(session.score ?? session.summary?.avg_score ?? 100);
+  elements.score.textContent = String(session.count ?? session.summary?.valid_reps ?? 0);
   elements.processMs.textContent = session.processMs ? `${session.processMs}ms` : "--";
   elements.stage.textContent = stageLabel[session.stage] || session.stage || "准备";
   elements.grade.textContent = session.summary?.grade || (isFinished ? "N/A" : "训练中");

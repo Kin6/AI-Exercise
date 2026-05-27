@@ -22,12 +22,20 @@ def _unique_errors(errors):
     return list(dict.fromkeys(errors))
 
 
+def clamp_score(score):
+    return int(max(0, min(100, round(score))))
+
+
 def score_from_errors(errors, exercise_name=None):
     penalty = get_penalties(exercise_name) if exercise_name else DEFAULT_PENALTIES
     total = 100
     for err in _unique_errors(errors):
         total -= penalty.get(err, DEFAULT_PENALTIES.get(err, 10))
-    return max(0, total)
+    return clamp_score(total)
+
+
+def live_score_from_errors(errors, exercise_name=None, closeness_penalty=0):
+    return clamp_score(score_from_errors(errors, exercise_name) - closeness_penalty)
 
 
 def is_valid_rep(errors, score, exercise_name=None):
@@ -37,7 +45,7 @@ def is_valid_rep(errors, score, exercise_name=None):
     return score >= valid_score and not (unique_errors & critical_errors)
 
 
-def build_score_details(errors, exercise_name):
+def build_score_details(errors, exercise_name, score_override=None, closeness_penalty=0):
     unique_errors = _unique_errors(errors)
     penalty = get_penalties(exercise_name)
     deductions = [
@@ -48,13 +56,22 @@ def build_score_details(errors, exercise_name):
         }
         for err in unique_errors
     ]
+    closeness_points = clamp_score(closeness_penalty) if closeness_penalty else 0
+    if closeness_points:
+        deductions.append(
+            {
+                "reason": "动作贴合度",
+                "points": closeness_points,
+                "label": f"动作贴合度 -{closeness_points}",
+            }
+        )
     positive_reasons = get_positive_reasons(exercise_name)
     positives = [
         reason
         for err, reason in positive_reasons.items()
         if err not in unique_errors
     ]
-    score = score_from_errors(unique_errors, exercise_name)
+    score = score_override if score_override is not None else live_score_from_errors(unique_errors, exercise_name, closeness_penalty)
 
     if deductions:
         deduction_text = "；".join(item["label"] for item in deductions)
