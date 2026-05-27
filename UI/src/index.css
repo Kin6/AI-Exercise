@@ -45,6 +45,9 @@ button {
   --blue: #aee7ff;
   --teal: #8ee6d1;
   --lime: #dfff5f;
+  --action-lime: #dfff5f;
+  --action-mint: #aee7ff;
+  --action-ink: #241b72;
   --orange: #ffa94d;
   --bg: #eef3ff;
   --bg-2: #f7f8ff;
@@ -346,14 +349,19 @@ button {
   border: 0;
   border-radius: 999px;
   padding: 0 20px;
-  color: #fff;
-  background: linear-gradient(135deg, var(--primary), var(--violet-2));
+  color: var(--action-ink);
+  background: linear-gradient(135deg, var(--action-lime), var(--action-mint));
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   font-weight: 800;
-  box-shadow: 0 16px 34px rgba(108, 77, 255, 0.26);
+  box-shadow: 0 16px 34px rgba(91, 126, 186, 0.22);
+}
+
+.primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 20px 38px rgba(91, 126, 186, 0.28);
 }
 
 .wide {
@@ -379,9 +387,10 @@ button {
 }
 
 .pill.is-active {
-  color: #fff;
-  border-color: transparent;
-  background: linear-gradient(135deg, var(--primary), var(--violet-2));
+  color: var(--action-ink);
+  border-color: rgba(223, 255, 95, 0.78);
+  background: linear-gradient(135deg, var(--action-lime), var(--action-mint));
+  box-shadow: 0 12px 24px rgba(91, 126, 186, 0.16);
 }
 
 .home-grid {
@@ -625,8 +634,8 @@ button {
   min-width: 86px;
   border: 0;
   border-radius: 18px;
-  color: #fff;
-  background: var(--primary);
+  color: var(--action-ink);
+  background: linear-gradient(135deg, var(--action-lime), var(--action-mint));
   font-weight: 750;
 }
 
@@ -1229,6 +1238,21 @@ button {
   align-items: center;
   gap: 7px;
   font-weight: 750;
+}
+
+.feedback-card button,
+.ghost-button {
+  border-color: rgba(174, 231, 255, 0.74);
+  color: var(--action-ink);
+  background: linear-gradient(135deg, rgba(223, 255, 95, 0.7), rgba(174, 231, 255, 0.72));
+  box-shadow: 0 12px 24px rgba(91, 126, 186, 0.14);
+}
+
+.feedback-card button:hover,
+.ghost-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(223, 255, 95, 0.86);
+  box-shadow: 0 16px 30px rgba(91, 126, 186, 0.22);
 }
 
 .controls .round {
@@ -1950,9 +1974,9 @@ img.backend-video-frame {
 
 .training-control.complete {
   min-width: 122px;
-  color: #f7f8ff;
-  background: linear-gradient(135deg, var(--violet-2), var(--primary));
-  box-shadow: 0 16px 34px rgba(108, 77, 255, 0.28);
+  color: var(--action-ink);
+  background: linear-gradient(135deg, var(--action-lime), var(--action-mint));
+  box-shadow: 0 16px 34px rgba(91, 126, 186, 0.24);
 }
 
 .training-metrics-strip {
@@ -2098,8 +2122,9 @@ img.backend-video-frame {
 }
 
 .feedback-card button.selected {
-  border-color: rgba(223, 255, 95, 0.7);
-  background: rgba(223, 255, 95, 0.32);
+  border-color: rgba(108, 77, 255, 0.22);
+  background: linear-gradient(135deg, var(--action-lime), var(--action-mint));
+  box-shadow: 0 16px 34px rgba(91, 126, 186, 0.24);
 }
 
 .archive-grid {

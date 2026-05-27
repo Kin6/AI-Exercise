@@ -1308,6 +1308,8 @@ function IntegratedObservationPage({
 }
 
 function FeedbackPage({ go }: { go: (page: PageId) => void }) {
+  const [selectedFeedback, setSelectedFeedback] = useState(0);
+
   return (
     <div className="page feedback-grid">
       <Card className="celebrate-card">
@@ -1317,7 +1319,16 @@ function FeedbackPage({ go }: { go: (page: PageId) => void }) {
       <Card className="feedback-card">
         <Tuantuan />
         <h2>现在感觉怎么样？</h2>
-        {["轻松了一些", "有一点缓解", "变化不明显"].map((item, i) => <button className={i === 0 ? "selected" : ""} key={item}>{item}</button>)}
+        {["轻松了一些", "有一点缓解", "变化不明显"].map((item, i) => (
+          <button
+            className={selectedFeedback === i ? "selected" : ""}
+            key={item}
+            onClick={() => setSelectedFeedback(i)}
+            type="button"
+          >
+            {item}
+          </button>
+        ))}
         <button className="primary wide" onClick={() => go("archive")}>保存到身体档案 <ChevronRight size={18} /></button>
       </Card>
     </div>
@@ -1357,7 +1368,7 @@ function ArchivePage() {
   );
 }
 
-function ExplorePage() {
+function ExplorePage({ go }: { go: (page: PageId) => void }) {
   const cards = [
     ["身体舒展", "肩背 / 脊柱 / 眼部", "lavender"],
     ["身体激活", "核心 / 平衡 / 身体协调", "cyan"],
@@ -1370,7 +1381,7 @@ function ExplorePage() {
           <HumanFigure compact />
           <h2>{title}</h2>
           <p>{text}</p>
-          <button className="ghost-button">开始探索 <ChevronRight size={16} /></button>
+          <button className="ghost-button" onClick={() => go("plan")}>开始探索 <ChevronRight size={16} /></button>
         </Card>
       ))}
     </div>
@@ -1422,9 +1433,7 @@ function IntegratedCoachPage({ onStartExercise }: { onStartExercise: (exercise: 
 export default function App() {
   const [page, setPage] = useState<PageId>("home");
   const [selectedExercise, setSelectedExercise] = useState<CoachExercise>(coachExercises[0]);
-  const [observationRoundComplete, setObservationRoundComplete] = useState(false);
   const meta = pageMeta[page];
-  const nextPage = useMemo(() => flow[(flow.indexOf(page) + 1) % flow.length], [page]);
 
   useEffect(() => {
     document.title = "每日轻动";
@@ -1442,9 +1451,8 @@ export default function App() {
         <IntegratedObservationPage
           go={setPage}
           exercise={selectedExercise}
-          onRoundComplete={() => setObservationRoundComplete(true)}
+          onRoundComplete={() => setPage("feedback")}
           onPreviousExercise={() => {
-            setObservationRoundComplete(false);
             setSelectedExercise((current) => {
               const currentIndex = coachExercises.findIndex((exercise) => exercise.key === current.key);
               return coachExercises[(currentIndex - 1 + coachExercises.length) % coachExercises.length];
@@ -1455,9 +1463,8 @@ export default function App() {
     }
     if (page === "feedback") return <FeedbackPage go={setPage} />;
     if (page === "archive") return <ArchivePage />;
-    if (page === "explore") return <ExplorePage />;
+    if (page === "explore") return <ExplorePage go={setPage} />;
     return <IntegratedCoachPage onStartExercise={(exercise) => {
-      setObservationRoundComplete(false);
       setSelectedExercise(exercise);
       setPage("observation");
     }} />;
@@ -1506,12 +1513,6 @@ export default function App() {
         <section className="page-shell" key={page}>
           {renderPage()}
         </section>
-
-        {page !== "archive" && (page !== "observation" || observationRoundComplete) && (
-          <button className="floating-next" onClick={() => setPage(nextPage)}>
-            下一页 <ChevronRight size={18} />
-          </button>
-        )}
       </section>
       {page !== "observation" && <DesktopPet />}
     </main>
